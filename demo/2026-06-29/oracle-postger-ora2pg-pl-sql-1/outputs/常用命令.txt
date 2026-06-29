@@ -1,0 +1,111 @@
+ora2pg 常用命令速查
+用途	命令
+测试连接	ora2pg -c ora2pg.conf -t SHOW_TABLE
+生成评估报告	ora2pg -c ora2pg.conf -t SHOW_REPORT --estimate_cost
+导出序列	ora2pg -c ora2pg.conf -t SEQUENCE -o seq.sql
+导出表结构	ora2pg -c ora2pg.conf -t TABLE -o table.sql
+导出视图	ora2pg -c ora2pg.conf -t VIEW -o view.sql
+导出触发器	ora2pg -c ora2pg.conf -t TRIGGER -o trigger.sql
+导出函数	ora2pg -c ora2pg.conf -t FUNCTION -o func.sql
+导出存储过程	ora2pg -c ora2pg.conf -t PROCEDURE -o proc.sql
+导出包	ora2pg -c ora2pg.conf -t PACKAGE -o pkg.sql
+导出同义词	ora2pg -c ora2pg.conf -t SYNONYM -o syn.sql
+导出授权	ora2pg -c ora2pg.conf -t GRANT -o grant.sql
+导出数据(INSERT)	ora2pg -c ora2pg.conf -t INSERT -o data.sql
+导出数据(COPY)	ora2pg -c ora2pg.conf -t COPY -o data.sql
+并行导出数据	ora2pg -c ora2pg.conf -t COPY -o data.sql -j 4
+一次性全部导出	ora2pg -c ora2pg.conf -t ALL -o all.sql
+指定 Schema	ora2pg -c ora2pg.conf -d SCHEMA_NAME -t TABLE
+只导出特定表	配置 `INCLUDE_TABLE ^(EMP
+排除特定表	配置 EXCLUDE_TABLE ^TEMP_
+
+常用参数：
+-c FILE — 指定配置文件
+-t TYPE — 导出类型
+-o FILE — 输出文件名
+-d SCHEMA — Schema 名称（覆盖配置）
+-j N — 并行线程数
+--estimate_cost — 预估工作量
+-v — 显示版本
+-h — 帮助
+快速查看当前版本支持哪些类型：
+ora2pg -t WRONG_TYPE
+会报错并列出所有支持的 TYPE。
+
+5:46
+
+
+
+
+
+
+我想进到ora2py镜像中，用上面命令查看执行的状态。应该怎么做
+
+
+
+
+5:53
+
+
+
+
+
+
+已处理 0s
+
+
+
+
+
+
+
+docker exec -it ora2pg_runner /bin/bash
+进去之后你的提示符会变成类似 root@ora2pg_runner:/# 或 root@ora2pg_runner:/work#，然后在里面就能随意执行命令了：
+# 各种查看方式
+ora2pg --version
+ora2pg -c /work/config/ora2pg.conf -t SHOW_TABLE
+cat /work/outputs/02_table.sql
+wc -l /work/outputs/*.sql
+一些实用的容器内自查命令：
+# 看已经导出了哪些文件
+ls -la /work/outputs/*.sql
+
+# 看特定导出文件的内容
+head -50 /work/outputs/02_table.sql
+
+# 测试 Oracle 连接
+ora2pg -c /work/config/ora2pg.conf -t SHOW_TABLE
+
+# 连接 PostgreSQL 查数据
+psql postgresql://postgres:postgres@postgres:5432/target_db -c "\dt"
+
+# 退出容器
+exit
+退出后回到宿主机的终端。可以先进去看一眼。
+
+5:53
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+请求批准
+
+自定义高

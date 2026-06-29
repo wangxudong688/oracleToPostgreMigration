@@ -1,0 +1,50 @@
+-------------------------------------------------------------------------------
+对象	数量	不可用	预估成本	备注	详情
+-------------------------------------------------------------------------------
+数据库链接	0	0	0	数据库链接将被导出为 SQL/MED PostgreSQL 的外部数据包装器（FDW）扩展，使用 oracle_fdw。
+全局临时表	3	0	30	PostgreSQL 不支持全局临时表，因此不会导出。您需要重写部分应用程序代码，以适配 PostgreSQL 临时表的行为。	ol$、ol$hints、ol$nodes。
+索引	22	0	2.4	有 2 个索引涉及导出，其余索引会自动生成，在 PostgreSQL 中也会自动生成。位图索引将导出为 btree_gin 索引，哈希索引（如有）将导出为 B 树索引。域索引将导出为 B 树索引，但会附带注释，提示主要应使用全文搜索（FTS）。集群索引、位图连接索引和 IOT 索引根本不会导出。反向索引也不会导出，您可以使用基于三元组的索引（参见 pg_trgm）或基于 reverse() 函数的索引和搜索。在索引中使用 'varchar_pattern_ops'、'text_pattern_ops' 或 'bpchar_pattern_ops' 操作符，可分别改善对 varchar、text 或 char 列使用 LIKE 运算符的搜索性能。	2 个 B 树索引。
+作业	0	0	0	作业不会被导出。您可以为它们设置外部 cron 作业。
+序列	2	0	1	序列完全受支持，但所有对 sequence_name.NEXTVAL 或 sequence_name.CURRVAL 的调用都将转换为 NEXTVAL('sequence_name') 或 CURRVAL('sequence_name')。
+同义词	0	0	0	同义词将导出为视图。PostgreSQL 中不存在同义词，但常见的解决方法是使用视图，或者将会话的 search_path 设置为可以访问当前模式之外的对象。
+表	27	0	2.7		8 个二进制列。2 个未知类型。总行数：1019。按行数排序的前 10 个表：help 表有 978 行。mview$_adv_parameters 表有 40 行。redo_db 表有 1 行。mview$_adv_journal 表有 0 行。mview$_adv_pretty 表有 0 行。mview$_adv_eligible 表有 0 行。mview$_adv_gc 表有 0 行。mview$_adv_info 表有 0 行。mview$_adv_rollup 表有 0 行。sqlplus_product_profile 表有 0 行。按大小排序的前 10 个最大表：
+视图	10	0	21	视图完全受支持，但可能使用特定函数。	mview_evaluations：2。mview_exceptions：2。mview_filter：3。mview_filterinstance：2。mview_log：2。mview_recommendations：2。mview_workload：3。product_privs：3。
+-------------------------------------------------------------------------------
+总计	64	0	57.10	57.10 个迁移成本单位大约相当于 1 人天。迁移单位设定为 5 分钟。
+
+-------------------------------------------------------------------------------
+迁移等级：B-4
+-------------------------------------------------------------------------------
+
+迁移等级：
+    A - 可能可以自动运行的迁移
+    B - 需要代码重写，人力成本最多 5 天的迁移
+    C - 需要代码重写，人力成本超过 5 天的迁移
+技术等级：
+    1 = 简单：无存储函数且无触发器
+    2 = 容易：无存储函数但有触发器，无需手动重写
+    3 = 一般：有存储函数和/或触发器，无需手动重写
+    4 = 需手动处理：无存储函数但有触发器或视图需要代码重写
+    5 = 困难：有存储函数和/或触发器且需要代码重写
+-------------------------------------------------------------------------------
+
+各视图成本评估明细
+视图 mview_filter 总预估成本：3
+	Cardinality => 1
+	UserEnv => 1
+视图 product_privs 总预估成本：3
+	Sys_Context => 1
+	UserEnv => 1
+视图 mview_workload 总预估成本：3
+	UserEnv => 1
+	Cardinality => 1
+视图 mview_recommendations 总预估成本：2
+	UserEnv => 1
+视图 mview_log 总预估成本：2
+	UserEnv => 1
+视图 mview_exceptions 总预估成本：2
+	UserEnv => 1
+视图 mview_evaluations 总预估成本：2
+	UserEnv => 1
+视图 mview_filterinstance 总预估成本：2
+	Cardinality => 1

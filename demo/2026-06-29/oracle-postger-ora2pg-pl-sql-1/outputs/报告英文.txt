@@ -1,0 +1,50 @@
+-------------------------------------------------------------------------------
+Object	Number	Invalid	Estimated cost	Comments	Details
+-------------------------------------------------------------------------------
+DATABASE LINK	0	0	0	Database links will be exported as SQL/MED PostgreSQL's Foreign Data Wrapper (FDW) extensions using oracle_fdw.	
+GLOBAL TEMPORARY TABLE	3	0	30	Global temporary table are not supported by PostgreSQL and will not be exported. You will have to rewrite some application code to match the PostgreSQL temporary table behavior.	ol$. ol$hints. ol$nodes. 
+INDEX	22	0	2.4	2 index(es) are concerned by the export, others are automatically generated and will do so on PostgreSQL. Bitmap will be exported as btree_gin index(es) and hash index(es) will be exported as b-tree index(es) if any. Domain index are exported as b-tree but commented to be edited to mainly use FTS. Cluster, bitmap join and IOT indexes will not be exported at all. Reverse indexes are not exported too, you may use a trigram-based index (see pg_trgm) or a reverse() function based index and search. Use 'varchar_pattern_ops', 'text_pattern_ops' or 'bpchar_pattern_ops' operators in your indexes to improve search with the LIKE operator respectively into varchar, text or char columns.	2 b-tree index(es). 
+JOB	0	0	0	Job are not exported. You may set external cron job with them.	
+SEQUENCE	2	0	1	Sequences are fully supported, but all call to sequence_name.NEXTVAL or sequence_name.CURRVAL will be transformed into NEXTVAL('sequence_name') or CURRVAL('sequence_name').	
+SYNONYM	0	0	0	SYNONYMs will be exported as views. SYNONYMs do not exists with PostgreSQL but a common workaround is to use views or set the PostgreSQL search_path in your session to access object outside the current schema.	
+TABLE	27	0	2.7		8 binary columns. 2 unknown types. Total number of rows: 1019. Top 10 of tables sorted by number of rows:. help has 978 rows. mview$_adv_parameters has 40 rows. redo_db has 1 rows. mview$_adv_journal has 0 rows. mview$_adv_pretty has 0 rows. mview$_adv_eligible has 0 rows. mview$_adv_gc has 0 rows. mview$_adv_info has 0 rows. mview$_adv_rollup has 0 rows. sqlplus_product_profile has 0 rows. Top 10 of largest tables:. 
+VIEW	10	0	21	Views are fully supported but can use specific functions.	mview_evaluations: 2. mview_exceptions: 2. mview_filter: 3. mview_filterinstance: 2. mview_log: 2. mview_recommendations: 2. mview_workload: 3. product_privs: 3. 
+-------------------------------------------------------------------------------
+Total	64	0	57.10	57.10 cost migration units means approximatively 1 man-day(s). The migration unit was set to 5 minute(s)
+
+-------------------------------------------------------------------------------
+Migration level : B-4
+-------------------------------------------------------------------------------
+
+Migration levels:
+    A - Migration that might be run automatically
+    B - Migration with code rewrite and a human-days cost up to 5 days
+    C - Migration with code rewrite and a human-days cost above 5 days
+Technical levels:
+    1 = trivial: no stored functions and no triggers
+    2 = easy: no stored functions but with triggers, no manual rewriting
+    3 = simple: stored functions and/or triggers, no manual rewriting
+    4 = manual: no stored functions but with triggers or views with code rewriting
+    5 = difficult: stored functions and/or triggers with code rewriting
+-------------------------------------------------------------------------------
+
+Details of cost assessment per view
+View mview_filter total estimated cost: 3
+	Cardinality => 1
+	UserEnv => 1
+View product_privs total estimated cost: 3
+	Sys_Context => 1
+	UserEnv => 1
+View mview_workload total estimated cost: 3
+	UserEnv => 1
+	Cardinality => 1
+View mview_recommendations total estimated cost: 2
+	UserEnv => 1
+View mview_log total estimated cost: 2
+	UserEnv => 1
+View mview_exceptions total estimated cost: 2
+	UserEnv => 1
+View mview_evaluations total estimated cost: 2
+	UserEnv => 1
+View mview_filterinstance total estimated cost: 2
+	Cardinality => 1
