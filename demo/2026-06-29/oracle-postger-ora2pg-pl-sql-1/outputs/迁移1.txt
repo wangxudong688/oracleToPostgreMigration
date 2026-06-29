@@ -1,0 +1,715 @@
+================================================================================
+  Oracle => PostgreSQL 迁移补充指南 (ora2pg)
+================================================================================
+  主题：前一份文档未覆盖到的差异与注意事项，便于学习时建立印象
+================================================================================
+
+
+================================================================================
+  1. Oracle 有而 PostgreSQL 没有的功能（需要改造）
+================================================================================
+
+  Oracle 功能                     影响范围           PostgreSQL 替代方案
+  --------------------------------------------------------------------------------
+  Flashback Query (AS OF TIMESTAMP)  应用查询逻辑    无直接等价。需应用层快照、
+                                                    或启用 pg_undolog 扩展（第三方）
+  Flashback Table / Drop             DBA 运维        用 PITR 或定期 pg_dump 替代
+  Flashback Data Archive            审计需求        用 pg_audit / 触发器 + 历史表
+  VPD (Virtual Private Database)    行级权限        用 PostgreSQL Row-Level Security
+                                                    (RLS)，功能类似但语法完全不同
+  Advanced Queue (AQ)               异步消息        用 pgq 扩展 / LISTEN+NOTIFY/
+                                                    RabbitMQ 等外部消息队列
+  Materialized View Log +           增量刷新 MV      无直接等价。用触发器 + 增量
+    REFRESH FAST                                      状态表 + 定时全量刷新模拟
+  Workspace Manager                 数据版本管理     无直接等价。需应用层实现
+  Oracle Label Security              数据安全标签    无。可用 RLS + 自定义策略
+  Oracle Data Redaction              数据脱敏        用 pg_anon 扩展或应用层脱敏
+  Oracle Transparent Data           加密             pgcrypto 或文件级加密
+    Encryption (TDE)
+  Oracle Real Application           高可用/集群      用 Patroni + pg_auto_failover
+    Clusters (RAC)                                    或 Citus 替代
+  Active Data Guard                 只读副本         PostgreSQL Streaming
+                                                     Replication + Hot Standby
+  Oracle Partitioning               分区（高级）     PG 分区从10+开始有RANGE/LIST/HASH
+  （复合分区、INTERVAL、自动分区）                    但功能弱于 Oracle，复合分区和
+                  自动区间分区需要用 pg_partman 扩展模拟
+  Oracle Scheduling (DBMS_SCHEDULER) 定时任务        pg_cron 扩展 / 系统 crontab
+  Oracle Resource Manager           资源隔离         无直接等价
+  Database Link - 透明跨库查询      跨库操作         dblink / postgres_fdw
+  Oracle Data Pump (expdp/impdp)    导入导出         pg_dump / pg_restore
+  Oracle GoldenGate                 实时同步          PG 逻辑复制 / pglogical 扩展
+  Oracle SQL*Loader                 批量加载         COPY / pg_bulkload
+  Oracle 层次查询                   层级查询（改）   WITH RECURSIVE 替代 CONNECT BY
+    CONNECT BY PRIOR                                   语法完全不同，逻辑需重写
+  Oracle 角色继承（多层）              权限             PG 角色也可以继承，但
+                                                      GRANT/REVOKE 行为有差异
+  Oracle NLS 多语言支持                全球化          PG 用 COLLATE + LC_CTYPE
+  Oracle 精细审计（FGA）               审计            pg_audit 扩展（功能类似）
+
+
+================================================================================
+  2. PostgreSQL 有而 Oracle 没有的功能（迁移后可利用）
+================================================================================
+
+  PostgreSQL 特有功能           说明
+  --------------------------------------------------------------------------------
+  GENERATED AS IDENTITY          PG 10+ 原生自增列，比 Oracle 的 IDENTITY 更灵活
+  SERIAL / BIGSERIAL             伪类型，自动创建序列（语法糖）
+  ARRAY 类型                     原生数组，可替代 Oracle 嵌套表
+  JSON / JSONB                   JSONB 支持索引和高效查询，比 Oracle JSON 更强
+  全文检索（Full Text Search）   to_tsvector / to_tsquery，原生集成
+  hstore (键值对)                  轻量键值存储
+  多种索引方法（GiST / GIN / BRIN）  丰富的索引访问方法
+  BRIN 索引                       对顺序写入的大表极高效
+  部分索引 (CREATE INDEX ... WHERE)  已兼容，但 PG 更常用
+  INCLUDE 索引 (覆盖索引)            PG 11+ 支持 INCLUDE 列，实现索引覆盖
+  ROW LEVEL SECURITY              行级安全策略（替代 VPD）
+  LISTEN / NOTIFY                  轻量级异步通知
+  RETURNING 子句                    INSERT/UPDATE/DELETE ... RETURNING
+  COPY / \copy                     原生高性能批量加载/导出
+  TABLE INHERITANCE                表继承，Oracle 无对应概念
+  DISTINCT ON                      分组取第一条
+  DO 块                             匿名代码块（类似匿名 PL/SQL 块）
+  GENERATED COLUMNS                 PG 12+ 生成列
+  RECURSIVE CTE                     递归 CTE (WITH RECURSIVE)
+  VARIADIC 函数参数                  可变参数函数
+  FILTER (WHERE ...) 聚合条件        聚合函数中过滤
+  TABLESAMPLE                      表采样
+  扩展生态                         丰富的扩展（PostGIS, pgvector 等）
+
+
+================================================================================
+  3. 行级安全（RLS）vs Oracle VPD 对比
+================================================================================
+
+  这是一个重要的差异：如果迁移的应用使用了 Oracle VPD 做行级权限，
+  PostgreSQL 的 RLS 是唯一替代方案，但实现方式完全不同。
+
+  Oracle VPD 例子：
+    EXEC DBMS_RLS.ADD_POLICY(
+      object_name => 'employee',
+      policy_name => 'emp_policy',
+      policy_function => 'fn_secure_employee',
+      sec_relevant_cols => 'salary'
+    );
+    -- 通过 policy_function 返回 WHERE 子句字符串实现行级过滤
+
+  PostgreSQL RLS 例子：
+    -- 启用行级安全
+    ALTER TABLE employee ENABLE ROW LEVEL SECURITY;
+
+    -- 创建策略（直接用表达式，不需要返回字符串的函数）
+    CREATE POLICY emp_policy ON employee
+      FOR SELECT
+      USING (department = current_setting('app.dept'));
+
+  # 关键差异
+  #   - Oracle 用策略函数返回字符串条件；PG 直接在策略中写条件表达式
+  #   - Oracle 可以按列控制（sec_relevant_cols）；PG 需要拆表或视图
+  #   - PG RLS 性能开销通常比 Oracle VPD 小
+  #   - PG RLS 基于角色/用户（current_user），不基于应用上下文
+
+
+================================================================================
+  4. CONNECT BY 到 WITH RECURSIVE 转换详解
+================================================================================
+
+  这是迁移中最常见的重写场景之一。两种语法风格完全相反。
+
+  Oracle:
+    SELECT empno, ename, mgr, LEVEL
+    FROM emp
+    START WITH mgr IS NULL
+    CONNECT BY PRIOR empno = mgr;
+
+  PostgreSQL:
+    WITH RECURSIVE emp_tree AS (
+      -- 锚点成员（= START WITH）
+      SELECT empno, ename, mgr, 1 AS level
+      FROM emp
+      WHERE mgr IS NULL
+
+      UNION ALL
+
+      -- 递归成员（= CONNECT BY PRIOR）
+      SELECT e.empno, e.ename, e.mgr, t.level + 1
+      FROM emp e
+      JOIN emp_tree t ON e.mgr = t.empno
+    )
+    SELECT * FROM emp_tree;
+
+  转换要点对照：
+    Oracle                          PostgreSQL
+    ---------------------------------------------------------
+    START WITH ...                  WITH RECURSIVE 中的锚点 SELECT
+    CONNECT BY PRIOR a = b          递归成员中的 JOIN a = b
+    LEVEL                           递归成员中手动 + 1
+    CONNECT_BY_ISLEAF               用 NOT EXISTS 或 LEAD 模拟
+    SYS_CONNECT_BY_PATH(col,',')    用 || 拼接或 string_agg()
+    ORDER SIBLINGS BY               ORDER BY + 路径排序策略
+    CONNECT_BY_ROOT                 锚点 SELECT 中保留根节点值
+    NOCYCLE                         递归 CTE 中检查循环引用（CYCLE 子句）
+
+  # 注意：Oracle 的 START WITH 可以省略（全表扫描构建树），
+  #      WITH RECURSIVE 必须有锚点成员，不能缺。
+
+
+================================================================================
+  5. 批量操作差异（BULK COLLECT / FORALL）
+================================================================================
+
+  Oracle 的批量操作在 PostgreSQL 中没有直接对应，需要改写。
+
+  Oracle (PL/SQL):
+    DECLARE
+      TYPE id_tab IS TABLE OF emp.empno%TYPE;
+      l_ids id_tab;
+    BEGIN
+      -- 批量收集
+      SELECT empno BULK COLLECT INTO l_ids FROM emp;
+
+      -- 批量处理
+      FORALL i IN 1..l_ids.COUNT
+        UPDATE emp SET sal = sal * 1.1
+        WHERE empno = l_ids(i);
+    END;
+
+  PostgreSQL 替代方案：
+    -- 使用循环（简单直接）
+    DO $$
+    DECLARE
+      rec RECORD;
+    BEGIN
+      FOR rec IN SELECT empno FROM emp LOOP
+        UPDATE emp SET sal = sal * 1.1
+        WHERE empno = rec.empno;
+      END LOOP;
+    END $$;
+
+    -- 更好的：直接用单条 SQL
+    UPDATE emp SET sal = sal * 1.1;
+
+    -- 或使用子查询
+    UPDATE emp SET sal = sal * 1.1
+    WHERE empno IN (SELECT empno FROM emp);
+
+  # 关键差异：
+  #   - Oracle BULK COLLECT + FORALL 大幅减少 PL/SQL 引擎与 SQL 引擎之间的上下文切换
+  #   - PostgreSQL PL/pgSQL 内部没有这种双引擎架构，不需要批量处理
+  #   - 大部分场景可以直接改写为单个 SQL 语句，性能更好
+  #   - 复杂场景用 FOR 循环即可，PG 中循环对基于集合的操作也不是性能杀手
+
+
+================================================================================
+  6. 集合类型差异（嵌套表 / VARRAY / 关联数组）
+================================================================================
+
+  Oracle 集合类型                    PostgreSQL 等价
+  --------------------------------------------------------------------------------
+  嵌套表 (Nested Table)              无直接等价。可用 PostgreSQL ARRAY 替代
+  VARRAY (可变数组)                  可用 ARRAY 替代
+  关联数组 (Associative Array /      无。仅能在 PL/SQL 中使用，
+    INDEX BY)                         迁移到 PL/pgSQL 后需改为 ARRAY 或临时表
+
+  Oracle 示例：
+    DECLARE
+      TYPE num_tab IS TABLE OF NUMBER;
+      v_nums num_tab := num_tab(10, 20, 30);
+    BEGIN
+      FOR i IN 1..v_nums.COUNT LOOP
+        DBMS_OUTPUT.PUT_LINE(v_nums(i));
+      END LOOP;
+    END;
+
+  PostgreSQL 改写：
+    DO $$
+    DECLARE
+      v_nums INT[] := ARRAY[10, 20, 30];
+    BEGIN
+      FOR i IN 1..array_length(v_nums, 1) LOOP
+        RAISE NOTICE '%', v_nums[i];
+      END LOOP;
+    END;
+    $$;
+
+  # 差异要点：
+  #   - Oracle 集合方法（COUNT, FIRST, LAST, NEXT, PRIOR, EXISTS, TRIM, DELETE）
+  #     在 PostgreSQL 中没有直接等价，需要用 array_length, array_upper,
+  #     unnest 等函数组合实现
+  #   - Oracle 表函数中使用 TABLE(v_nums) 将集合转为行集
+  #     PostgreSQL 用 UNNEST(ARRAY[...]) 替代
+
+
+================================================================================
+  7. REF CURSOR / SYS_REFCURSOR 差异
+================================================================================
+
+  Oracle 中 REF CURSOR 常用于返回结果集给应用层：
+    FUNCTION get_emp(p_dept NUMBER) RETURN SYS_REFCURSOR
+    IS
+      v_cur SYS_REFCURSOR;
+    BEGIN
+      OPEN v_cur FOR SELECT * FROM emp WHERE deptno = p_dept;
+      RETURN v_cur;
+    END;
+
+  PostgreSQL 等价（直接用 SETOF 返回表类型）：
+    CREATE FUNCTION get_emp(p_dept INT)
+    RETURNS SETOF emp
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      RETURN QUERY SELECT * FROM emp WHERE deptno = p_dept;
+    END;
+    $$;
+
+    -- 或使用 REFCURSOR（但 PG 中不常用）
+    CREATE FUNCTION get_emp(p_dept INT)
+    RETURNS REFCURSOR
+    LANGUAGE plpgsql AS $$
+    DECLARE
+      v_cur REFCURSOR;
+    BEGIN
+      OPEN v_cur FOR SELECT * FROM emp WHERE deptno = p_dept;
+      RETURN v_cur;
+    END;
+    $$;
+
+  # 差异要点：
+  #   - Oracle 应用层通常期望 SYS_REFCURSOR 绑定到结果集
+  #   - PostgreSQL 中推荐使用 RETURNS SETOF / RETURNS TABLE
+  #   - REFCURSOR 在 PG 中也存在但使用场景不同
+  #   - 使用 REFCURSOR 时，PG 需要在事务内消费结果集
+  #   - Oracle 的 REF CURSOR 可以跨会话使用（但实际很少这么做）
+  #   - PG 的 REFCURSOR 仅在同一事务内有效
+
+
+================================================================================
+  8. Oracle SQL 提示（HINT）与 PG 的对应
+================================================================================
+
+  Oracle 大量使用 HINT 优化查询，这些在 PostgreSQL 中都不支持。
+
+  Oracle HINT                        PostgreSQL 等效操作
+  --------------------------------------------------------------------------------
+  /*+ FULL(t) */                      扫描是 PG 优化器自动选择，一般不需要指定
+                                      set enable_seqscan = off（不推荐）
+  /*+ INDEX(t idx_name) */            PG 优化器自动选索引 / 用 pg_hint_plan 扩展
+  /*+ LEADING(t1 t2) */               查 pg_hint_plan 扩展
+  /*+ USE_HASH / USE_NL */            PG 通过 join_collapse_limit 等参数控制
+  /*+ PARALLEL(t 4) */                PG 自动并行，max_parallel_workers_per_gather
+  /*+ APPEND */                       PG 不需要，直接插入有类似行为
+  /*+ MATERIALIZE */                  PG 自动决定 CTE 物化 / 用 OFFSET 0 技巧
+  /*+ NO_MERGE / NO_EXPAND */         用 pg_hint_plan 扩展（需安装）
+  /*+ FIRST_ROWS(n) */                PG 优化器默认基于成本，如需优化首行响应
+                                      可用 LIMIT + 排序
+  /*+ ORDERED */                      重排 FROM 子句顺序
+  /*+ PUSH_PRED */                    PG 自动推进谓词
+  /*+ DRIVING_SITE */                 用 postgres_fdw + 下推优化
+
+  # 重要：大部分 Oracle HINT 在 PG 中不需要
+  #   - PG 优化器基于实际成本，比 Oracle 基于规则的优化器更现代
+  #   - 如果确实需要 HINT，安装 pg_hint_plan 扩展（类似 Oracle 语法）
+  #   - 建议迁移时先去掉所有 HINT，发现问题再逐个加 pg_hint_plan
+
+
+================================================================================
+  9. 事务与并发控制差异
+================================================================================
+
+  Oracle                          PostgreSQL
+  --------------------------------------------------------------------------------
+  MVCC 实现                        快照在回滚段中        快照在堆页中（可见性映射）
+  UNDO 段                         专用回滚段            通过旧行版本在数据页中实现
+  UPDATE 行为                      原地更新              新版本插入 + 旧版本标记删除
+  VACUUM                          不需要                需要定期 VACUUM
+  AUTO VACUUM                     无                    autovacuum 默认开启
+  BLOCK 大小                       8KB（默认可调）       8KB（编译时固定）
+  SELECT FOR UPDATE               支持                  支持
+  SELECT ... SKIP LOCKED          支持                  支持
+  隔离级别                          READ COMMITTED(默认)  READ COMMITTED(默认)
+                                   SERIALIZABLE           REPEATABLE READ
+                                                         SERIALIZABLE
+  读一致性                         语句级读一致性         语句级读一致性
+                                   查询开始时快照         查询开始时快照
+  BLOB 写入事务处理                  在事务中完整提交      大对象支持流式读写
+  死锁检测                          即时检测              即时检测
+
+  # 迁移后需要注意的 PG 特性：
+  #   - VACUUM / autovacuum : Oracle 不需要此操作，PG 必须有。
+  #     迁移后要关注 autovacuum 设置，防止表膨胀。
+  #   - UPDATE 在 PG 中会产生死元组，频繁更新的大表需要调整
+  #     fillfactor 参数。
+  #   - Oracle 的 SERIALIZABLE 隔离级别可以防止所有并发异常，
+  #     PG 的 SERIALIZABLE 通过 SSI (Serializable Snapshot Isolation)
+  #     实现，也有类似效果但开销更大。
+  #   - PG 的 READ UNCOMMITTED 隔离级别实际上就是 READ COMMITTED，
+  #     不接受脏读。
+  #   - Oracle 的 REPEATABLE READ 不支持，对应 PG 的同名级别。
+
+
+================================================================================
+  10. 字符集（Character Set）与全球化差异
+================================================================================
+
+  Oracle                          PostgreSQL
+  --------------------------------------------------------------------------------
+  数据库字符集                     创建时指定            创建时指定
+    （通常 AL32UTF8 / ZHS16GBK）     （通常 UTF8）
+  国家字符集（NCHAR/NVARCHAR2）     有                    无（统一用 UTF8）
+  NLS_LANG                         客户端编码             client_encoding
+  NLS_SORT 排序规则                 复杂排序体系           COLLATE 子句
+  NLS_COMP 比较规则                 复杂比较规则           COLLATE + ICU
+  NLS_DATE_FORMAT                  会话级参数             datestyle 参数
+  NLS_TIMESTAMP_FORMAT             会话级参数             lc_time
+  NLS_NUMERIC_CHARACTERS            .和,分隔符            lc_numeric
+  NLS_LENGTH_SEMANTICS              BYTE/CHAR             PG 默认字符语义
+  多字节字符行为                     受NLS_LENGTH_SEMANTICS 默认 UTF8，CHAR(n) 是
+                                    影响                 字符语义
+
+  # 迁移时的注意事项：
+  #   - 如果 Oracle 是 ZHS16GBK（中文编码），建议迁移到 PG UTF8
+  #   - CHAR(n) 在 Oracle 中是字节语义（受NLS_LENGTH_SEMANTICS控制）
+  #   - CHAR(n) 在 PostgreSQL 是字符语义（除非指定 BYTEA）
+  #   - 含中文的 VARCHAR2(20) 可能需要调整为 VARCHAR(10) 或更大
+  #   - NVARCHAR2 可以统一转为 VARCHAR + UTF8 编码
+
+
+================================================================================
+  11. 大对象（LOB）处理的差异
+================================================================================
+
+  Oracle                          PostgreSQL
+  --------------------------------------------------------------------------------
+  CLOB                              TEXT
+  BLOB                              BYTEA
+  BFILE                             无（需改造）
+  LOB 存储                         独立LOB段            TEXT/BYTEA 存储在行内
+  LOB 操作                          DBMS_LOB 包           PG 大对象函数 + SQL 操作
+  行外 LOB 存储                     自动（超过4KB）       通过 TOAST 机制自动
+  LOB 性能                         需要手动调优           TOAST 自动管理
+  SecureFile LOB                    12c+ 新特性            无
+
+  PostgreSQL TOAST 机制：
+    - 行数据超过 2KB 时自动压缩
+    - 超过约 2KB 时移到 TOAST 表
+    - 不需要手动指定存储参数
+    - 可查询的 LOB：TEXT/BYTEA 支持在 SQL 中直接操作
+      （截取、拼接、比较等）
+
+  # 迁移要点：
+  #   - Oracle CLOB 自动转为 PG TEXT，绝大多数场景无缝迁移
+  #   - Oracle BLOB 自动转为 PG BYTEA
+  #   - PG BYTEA 默认输出为十六进制格式（设置 bytea_output = escape
+  #     可改为转义格式）
+  #   - Oracle 的 DBMS_LOB.SUBSTR() 等在 PG 中直接用
+  #     SUBSTRING(bytea, ...) 替代
+  #   - BFILE 需要应用层改造，将文件路径存储为 TEXT + 应用代码读文件
+
+
+================================================================================
+  12. ANALYZE 与统计信息差异
+================================================================================
+
+  Oracle                          PostgreSQL
+  --------------------------------------------------------------------------------
+  手动收集统计信息                  DBMS_STATS            ANALYZE
+  自动收集                         默认夜间窗口           autovacuum 自动触发
+  统计信息存储                     数据字典               pg_statistic / pg_stats
+  直方图                           默认HISTOGRAM          默认开启，可控制
+  多列统计                         无原生支持             PG 11+ 扩展统计信息
+  采样率                           可指定百分比           默认 30000 行采样
+  系统统计信息                     可以收集 CPU/IO        pg_stats 提供查询
+
+  # 迁移后注意事项：
+  #   - Oracle 的 DBMS_STATS.GATHER_* 需改为 ANALYZE 或 autovacuum
+  #   - PG 的 autovacuum 默认开启，但建议迁移后对全库 ANALYZE 一次
+  #   - PG 中 ANALYZE 默认只采样 30000 行，大表可能不准
+  #   - 可设置 default_statistics_target 提高采样量
+  #   - PG 9+ 支持 CREATE STATISTICS 创建扩展统计信息
+
+
+================================================================================
+  13. 执行计划查看差异
+================================================================================
+
+  Oracle                          PostgreSQL
+  --------------------------------------------------------------------------------
+  查看计划                          EXPLAIN PLAN FOR       EXPLAIN / EXPLAIN ANALYZE
+  显示计划                          DBMS_XPLAN.DISPLAY    EXPLAIN（文本/JSON/XML/YAML）
+  实际执行计划                                                     EXPLAIN (ANALYZE, BUFFERS)
+  缓存计划                         共享池中              pg_stat_statements
+  AWR 报告                          有                    无，用 pg_stat_statements +
+                                                        pg_stat_activity 替代
+  SQL Monitor                       有                    无，用 pg_stat_activity
+  自适应执行计划                     有（基数反馈）         PG 11 开始有自适应计划
+
+  # 迁移后应对：
+  #   - 将 EXPLAIN PLAN FOR 改为 EXPLAIN
+  #   - PG 的 EXPLAIN ANALYZE 显示实际执行信息，比 Oracle 更直接
+  #   - 安装 pg_stat_statements 扩展查看慢查询
+  #   - 使用 auto_explain 模块自动记录慢查询
+
+
+================================================================================
+  14. 备份与恢复对比
+================================================================================
+
+  Oracle                          PostgreSQL
+  --------------------------------------------------------------------------------
+  逻辑导出                          expdp / Data Pump     pg_dump / pg_dumpall
+  逻辑导入                          impdp                 pg_restore
+  物理备份                          RMAN                  pg_basebackup
+  增量备份                          支持                  支持（WAL归档）
+  时间点恢复（PITR）                RMAN + 归档日志       pg_basebackup + WAL
+  Data Guard （备库）               Active / Physical     Streaming Replication
+  导出格式                          二进制dump            custom / tar / directory
+  全库迁移                           expdp ... FULL=Y     pg_dumpall
+
+  # 差异要点：
+  #   - Oracle 用 Data Pump（expdp/impdp），PG 用 pg_dump/pg_restore
+  #   - PG 支持 gzip 压缩的 dump 格式（-Fc）
+  #   - PG 的 pg_restore 可以并行导入（-j 选项）
+
+
+================================================================================
+  15. 连接方式与驱动差异
+================================================================================
+
+  项目                  Oracle                 PostgreSQL
+  --------------------------------------------------------------------------------
+  JDBC 驱动             ojdbc8/ojdbc11          pgjdbc (org.postgresql.Driver)
+  JDBC URL              jdbc:oracle:thin:@      jdbc:postgresql://
+                        host:1521:ORCL          host:5432/dbname
+  Python 驱动           cx_Oracle               psycopg2 / asyncpg
+  .NET 驱动             Oracle.ManagedDataAccess Npgsql
+  ODBC 驱动             Oracle ODBC             psqlODBC
+  C 驱动                OCI                     libpq
+  连接池（Java）        HikariCP / UCP          HikariCP / pgpool-II
+  连接池（应用层）      c3p0 / DBCP             同（换JDBC驱动即可）
+  默认端口              1521                    5432
+  SID/Service Name      SID / SERVICE_NAME      database name
+
+  # 应用层改造要点：
+  #   - JDBC URL 格式完全不同，需要重新配置
+  #   - 连接池配置中的验证查询（validationQuery）需要改：
+  #     Oracle: SELECT 1 FROM DUAL
+  #     PG:     SELECT 1
+  #   - 序列获取方式不同：
+  #     Oracle: seq_name.NEXTVAL（SQL内）
+  #     PG:     NEXTVAL('seq_name'::regclass) 或 INSERT ... RETURNING
+  #   - Oracle 的 RETURNING ... INTO 在 PG JDBC 中要用 RETURNING 子句
+
+
+================================================================================
+  16. ORA-xxx 错误与 PG 错误代码对照
+================================================================================
+
+  Oracle 常见错误                  PostgreSQL 等价
+  --------------------------------------------------------------------------------
+  ORA-00001 (唯一约束)               duplicate key value violates unique constraint
+  ORA-01403 (无数据)                query returned no rows (NO_DATA_FOUND)
+  ORA-01422 (返回多行)              query returned more than one row
+  ORA-01476 (除零)                  division by zero
+  ORA-00942 (表或视图不存在)        relation "xxx" does not exist
+  ORA-00904 (无效标识符)            column "xxx" does not exist
+  ORA-02291 (违反外键)              insert or update violates foreign key
+  ORA-02292 (存在子记录)            update/delete violates foreign key
+  ORA-06502 (数值/值错误)           value too long / numeric overflow
+  ORA-06550 (PL/SQL 编译错误)       syntax error / function does not exist
+  ORA-01555 (快照太旧)              无直接等价（PG 没有回滚段）
+  ORA-00060 (死锁)                  deadlock detected
+  ORA-01017 (用户名/密码无效)       password authentication failed
+  ORA-01034 (Oracle 不可用)         could not connect to server
+  ORA-04088 (触发器执行错误)         PG 触发器中概念不同
+  ORA-1403 (数据未找到)             no_data_found
+
+  # 注：PG 错误编码是 5 字符（如 23505 表示唯一约束违反），
+  #    应用层错误处理需要适配。
+
+
+================================================================================
+  17. 迁移测试策略关键点
+================================================================================
+
+  除了基础的对象数量和数据行数比对，还需关注的测试：
+
+  # (1) NULL 行为测试
+  #     Oracle 中 ''（空字符串）等同于 NULL
+  #     PostgreSQL 中 ''（空字符串）不等同于 NULL
+  #     务必检查所有 VARCHAR 列的空值行为
+
+  # (2) 排序规则测试
+  #     Oracle 和 PG 默认排序规则可能不同
+  #     特别是中文排序（Oracle NLS_SORT 影响）
+
+  # (3) 日期范围测试
+  #     Oracle DATE 最小 4712 BC，最大 9999 AD
+  #     PG TIMESTAMP 最小 4713 BC，最大 294276 AD（相近但不完全一致）
+  #     边界值测试
+
+  # (4) 数字精度测试
+  #     Oracle NUMBER 无精度时等同 NUMERIC（精确）
+  #     PG NUMERIC 也精确，但 FLOAT/DOUBLE 是近似值
+  #     财务计算务必用 NUMERIC，不可用 FLOAT/DOUBLE
+
+  # (5) 事务回滚测试
+  #     Oracle DDL 自动提交
+  #     PostgreSQL DDL 在事务内（可回滚！）
+  #     应用层事务逻辑可能需要调整
+
+  # (6) 应用层连接测试
+  #     连接池初始化
+  #     连接池验证查询
+  #     事务超时设置
+  #     批量操作参数
+
+  # (7) 性能回归测试
+  #     关键查询的执行计划
+  #     并发的锁等待情况
+  #     大促/高峰期的吞吐量
+  #     VACUUM 对性能的影响
+
+
+================================================================================
+  18. 迁移前后 Checklist
+================================================================================
+
+  [迁移前]
+    [ ] 安装 ora2pg 并验证可连接 Oracle
+    [ ] 收集 Oracle 全量对象清单
+    [ ] 生成 ora2pg 评估报告（特别关注不兼容对象）
+    [ ] 评估迁移预估人天数
+    [ ] 搭建 PostgreSQL 测试环境
+    [ ] 准备回退方案（保留 Oracle 可回退）
+
+  [迁移中进行]
+    [ ] 按依赖顺序导出 Schema（序列->表->约束->索引->视图->触发器等）
+    [ ] 逐个文件导入 PG 测试库并验证
+    [ ] 导出数据并导入 PG
+    [ ] 手动修改不兼容语法
+    [ ] 编译所有函数/过程（无编译错误）
+
+  [迁移后验证]
+    [ ] 对象数量与 Oracle 一致
+    [ ] 所有表的行数一致（可抽样）
+    [ ] 所有存储过程/函数可成功编译
+    [ ] 应用层可正常连接
+    [ ] 关键查询结果与 Oracle 一致
+    [ ] 性能可比（或更优）
+    [ ] 压力测试通过
+    [ ] 备份方案就绪（pg_dump / WAL 归档）
+    [ ] 监控方案就绪（慢查询、连接数等）
+
+  [上线后关注]
+    [ ] autovacuum 工作情况
+    [ ] 长时间运行的事务
+    [ ] 连接池使用情况
+    [ ] 慢查询日志
+    [ ] 磁盘占用增长
+
+
+================================================================================
+  19. ora2pg 高级配置与技巧（补充）
+================================================================================
+
+  在基础配置之外，以下配置项也很有用：
+
+  配置项                         说明
+  --------------------------------------------------------------------------------
+  EXTERNAL_TO_FDW 1               Oracle 外部表（external table）自动转为 PG FDW
+  SYNONYM_TO_VIEW 1               同义词（SYNONYM）自动转为视图
+  VIEW_RIGHTS 1                   视图权限也导出
+  MVIEW_TO_VIEW 1                 物化视图转为普通视图（需手动改造）
+  DROP_INDEXES 0                  不要 DROP 再重建索引（增量迁移时有用）
+  PACKAGE_AS_SCHEMA 1             Oracle 包拆分为 PG Schema（各函数独立）
+  PG_SCHEMA  public               PG Schema 名称
+  DEREF_TO_JOIN 1                 将 Oracle REF 引用转为 JOIN
+  EXIT_CODE_OVERWRITE 1           允许覆盖已存在的输出文件
+  DATA_TYPE  REGEXP              自定义数据类型映射正则
+  REPLACE_TABLESPACE              自定义表空间映射规则
+  DEFAULT_NUMERIC                 默认 NUMERIC 精度映射
+  NLS_NCHAR  1                    NCHAR/NVARCHAR2 特殊处理
+
+  命令行常用参数补充：
+    -c FILE      指定配置文件
+    -t TYPE      导出类型
+    -o FILE      输出文件名
+    -d SCHEMA    指定 Schema（覆盖配置）
+    -j N         并行任务数（数据导出时）
+    -h           显示帮助
+    -v           显示版本
+    --cost_unit  评估单位（天/小时）
+    --estimate_cost  评估工作量和转换成本
+
+  # 常用技巧：
+  #   - 用 SHOW_REPORT + --estimate_cost 快速了解迁移难度
+  #   - 先跑 SHOW_TABLE 确认能连上 Oracle 并看到表
+  #   - 限定 INCLUDE_TABLE/EXCLUDE_TABLE 分批迁移
+  #   - 大表数据导出用 COPY 模式 + 并行 -j 4
+  #   - 函数体复杂时，先看 FUNCTION 导出结果再调整 PLSQL_PGSQL 选项
+  #   - 迁移包（PACKAGE）时用 PACKAGE_AS_SCHEMA=1 拆解为多个函数
+
+
+================================================================================
+  20. 常见迁移反模式（Anti-Patterns）
+================================================================================
+
+  # 反模式 1：一次性迁移所有对象
+  #   正确做法：分批迁移，每批验证后再进行下一批
+  #   顺序：序列 -> 表 -> 约束/索引 -> 视图 -> 触发器 -> 函数 -> 数据
+
+  # 反模式 2：直接在生产环境执行迁移
+  #   正确做法：先在测试环境完整演练，再执行生产迁移
+
+  # 反模式 3：完全信任 ora2pg 自动转换
+  #   正确做法：每步都人工审查导出的 SQL 脚本
+
+  # 反模式 4：忽略 VACUUM
+  #   正确做法：在迁移后就设置好 autovacuum 参数
+
+  # 反模式 5：复制 Oracle 的索引策略
+  #   正确做法：利用 PG 的索引类型（BRIN、GIN、部分索引）重新设计
+
+  # 反模式 6：在 PG 中使用 Oracle 风格的批量操作
+  #   正确做法：改写为集合操作或简单循环
+
+  # 反模式 7：忽略大小写敏感性
+  #   正确做法：在迁移后全局检查字符串比较和 WHERE 条件
+  #   Oracle 默认不区分大小写，PG 默认区分
+
+  # 反模式 8：迁移后不重建统计信息
+  #   正确做法：导入数据后运行 ANALYZE
+
+  # 反模式 9：不测试 NULL 行为
+  #   正确做法：重点测试 '' 和 NULL 的处理
+
+  # 反模式 10：一刀切地使用 SERIAL 替代 Oracle 序列
+  #   正确做法：评估应用是否依赖序列值间隙、循环等行为
+  #   SERIAL 是 INT + SEQUENCE 的语法糖，但 behavior 有细微差别
+
+
+================================================================================
+  附：参考资源
+================================================================================
+
+  - ora2pg 官方文档：https://ora2pg.darold.net/
+  - PostgreSQL 文档：https://www.postgresql.org/docs/
+  - Orafce 扩展（Oracle 兼容函数库）：https://github.com/orafce/orafce
+  - pg_hint_plan（HINT 兼容扩展）：https://github.com/ossc-db/pg_hint_plan
+  - pg_partman（分区管理扩展）：https://github.com/pgpartman/pg_partman
+  - pg_audit（审计扩展）：https://github.com/pgaudit/pgaudit
+  - pg_cron（定时任务扩展）：https://github.com/citusdata/pg_cron
+  - pg_stat_statements（慢查询统计内置扩展）
+
+
+================================================================================
+  附注
+================================================================================
+
+  - 本文件作为 迁移.txt 的补充，重点覆盖第一份文档未深入的功能差异
+  - 建议结合 迁移.txt 一起阅读，形成完整的迁移知识体系
+  - 实际迁移中遇到问题，重点关注 PL/SQL 转换、CONNECT BY 重写、
+    NULL 行为差异、字符集和日期函数的兼容性这四大块
+  - Oracle 的包、位图索引、物化视图增量刷新是迁移中改造量最大的三个部分
+
+================================================================================

@@ -1,0 +1,497 @@
+================================================================================
+  Oracle => PostgreSQL 本地 Docker 实战操作指南 (ora2pg)
+================================================================================
+  目标：在 Mac 上启动 Oracle Free + PostgreSQL 16 容器，
+        用 ora2pg 完成全流程迁移，验证各类对象的转换结果。
+================================================================================
+
+
+================================================================================
+  前提条件
+================================================================================
+
+  - Mac 已安装 Docker Desktop（推荐 4.25+）
+  - 已有镜像：
+      container-registry.oracle.com/database/free:latest
+      postgres:16
+  - 主机已安装 Homebrew（用于安装 ora2pg）
+  - 主机有网络（安装 CPAN 模块时需要）
+
+  如 Docker Desktop 未运行，先启动：
+  open -a Docker
+
+
+================================================================================
+  第一步：启动 Oracle Free 容器
+================================================================================
+
+  Oracle Free（23c Free 或 21c XE）是官方免费的 Oracle 数据库版本。
+
+  # 如果还没登录 Oracle 容器仓库，需要先登录
+  docker login container-registry.oracle.com
+  # 输入 Oracle SSO 账户（需要先注册：https://container-registry.oracle.com/）
+  # 如果是 21c XE (docker pull gvenezia/oracle-xe-21c)，不需要登录
+
+  # 启动 Oracle Free 容器
+  docker run -d \
+    --name oracle_free \
+    -p 1521:1521 \
+    -p 5500:5500 \
+    -e ORACLE_PWD=oracle \
+    -e ORACLE_CHARACTERSET=AL32UTF8 \
+    container-registry.oracle.com/database/free:latest
+
+  参数说明：
+    ORACLE_PWD          SYS / SYSTEM 账户密码
+    ORACLE_CHARACTERSET  数据库字符集（建议 UTF8 以兼容 PostgreSQL）
+    -p 1521:1521         SQL*Net 监听端口
+    -p 5500:5500         Oracle Enterprise Manager Express 端口
+
+  # 查看启动日志（Oracle 首次启动需要 10-15 分钟初始化）
+  docker logs -f oracle_free
+
+  等待日志中出现以下信息表示启动完毕：
+    #########################
+    DATABASE IS READY TO USE!
+    #########################
+
+  # 验证连接（容器内自带 sqlplus）
+  docker exec oracle_free sqlplus system/oracle@//localhost:1521/FREE
+
+  # Oracle Free 默认信息：
+  #   全局数据库名: FREE
+  #   PDB 名称:     FREEPDB1
+  #   SID:          FREE
+  #   端口:         1521
+  #   SYS 密码:     oracle（上面 -e 指定的）
+  #   SYSTEM 密码:  oracle
+
+
+================================================================================
+  第二步：启动 PostgreSQL 16 容器
+================================================================================
+
+  # 启动 PostgreSQL 16
+  docker run -d \
+    --name postgres16 \
+    -p 5432:5432 \
+    -e POSTGRES_PASSWORD=postgres \
+    -e POSTGRES_DB=target_db \
+    postgres:16
+
+  参数说明：
+    POSTGRES_PASSWORD  超级用户 postgres 的密码
+    POSTGRES_DB        默认创建的数据库名
+
+  # 验证连接
+  docker exec -it postgres16 psql -U postgres -d target_db -c "SELECT version();"
+
+  # 获取容器 IP（ora2pg 配置时需要）
+  docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' oracle_free
+  docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' postgres16
+
+
+================================================================================
+  第三步：安装 ora2pg
+================================================================================
+
+  方式 A：通过 Homebrew 安装（推荐，最简单）
+  -----------------------------------------
+  brew install ora2pg
+
+  如果 brew 安装的 ora2pg 缺少 DBD::Oracle，需要手动安装 Oracle 客户端：
+    # 下载 Oracle Instant Client（Basic + SDK 包）
+    # https://www.oracle.com/database/technologies/instant-client/macos-intel-arm-downloads.html
+
+    # 解压并配置环境变量
+    export LD_LIBRARY_PATH=/Users/xxx/instantclient_23_5:$LD_LIBRARY_PATH
+    export DYLD_LIBRARY_PATH=/Users/xxx/instantclient_23_5:$DYLD_LIBRARY_PATH
+    export TNS_ADMIN=/Users/xxx/instantclient_23_5
+
+    # 安装 Perl 数据库驱动
+    cpan install DBD::Oracle
+    cpan install DBD::Pg
+
+  方式 B：用 Docker 安装（不污染本机环境）
+  -----------------------------------------
+  # 使用带 ora2pg 的 Docker 镜像
+  docker run -it --rm \
+    --network host \
+    -v $(pwd):/work \
+    darold/ora2pg:latest /bin/bash
+
+  # 镜像内自带 ora2pg + DBD::Oracle + DBD::Pg
+  # 后续命令在容器内执行
+
+  方式 C：通过 CPAN 手动安装（最全面）
+  -----------------------------------------
+  # 先安装 Oracle Instant Client（见方式 A）
+  # 再安装 PostgreSQL 客户端
+  brew install libpq
+  export PATH="/usr/local/opt/libpq/bin:$PATH"
+
+  cpan install DBD::Oracle DBD::Pg ora2pg
+
+  验证安装：
+  ora2pg --version
+
+
+================================================================================
+  第四步：在 Oracle 中创建测试数据
+================================================================================
+
+  用容器内 sqlplus 执行测试脚本：
+
+  # 将测试 SQL 文件拷贝到容器
+  docker cp sample-oracle.sql oracle_free:/tmp/
+
+  # 连接 Oracle 并执行
+  docker exec -i oracle_free sqlplus system/oracle@//localhost:1521/FREE \
+    @/tmp/sample-oracle.sql
+
+  或直接通过管道导入：
+  cat sample-oracle.sql | docker exec -i oracle_free sqlplus system/oracle@//localhost:1521/FREE
+
+  # 验证对象创建成功
+  docker exec -i oracle_free sqlplus -S system/oracle@//localhost:1521/FREE <<< "
+    SELECT object_type, COUNT(*) FROM user_objects
+    WHERE object_type IN ('TABLE','VIEW','INDEX','PROCEDURE','FUNCTION','TRIGGER','SEQUENCE')
+    GROUP BY object_type ORDER BY object_type;
+  "
+
+  如果选择创建 PDB 用户而不是用 SYSTEM：
+    -- 连接 PDB
+    docker exec -i oracle_free sqlplus system/oracle@//localhost:1521/FREEPDB1
+
+    -- 创建测试用户
+    CREATE USER test_user IDENTIFIED BY test_pass;
+    GRANT CONNECT, RESOURCE, CREATE VIEW, CREATE PROCEDURE, CREATE TRIGGER TO test_user;
+    GRANT UNLIMITED TABLESPACE TO test_user;
+    ALTER SESSION SET CURRENT_SCHEMA = test_user;
+
+    -- 然后在 test_user 下创建表和数据
+
+
+================================================================================
+  第五步：配置 ora2pg.conf
+================================================================================
+
+  生成配置文件模板：
+  cd /tmp
+  mkdir my_migration && cd my_migration
+  ora2pg --init_project my_project
+
+  或直接手动创建最小配置：
+
+  # >>> ora2pg.conf <<<
+
+  # Oracle 连接（对应上面容器）
+  ORACLE_DSN   dbi:Oracle:host=127.0.0.1;sid=FREE;port=1521
+  ORACLE_USER  system
+  ORACLE_PWD   oracle
+
+  # 如果要连 PDB，DSN 改为：
+  # ORACLE_DSN   dbi:Oracle:host=127.0.0.1;service_name=FREEPDB1;port=1521
+  # ORACLE_USER  test_user
+  # ORACLE_PWD   test_pass
+
+  # Schema（Oracle 用户名，大写）
+  SCHEMA       SYSTEM
+
+  # PostgreSQL 连接（导入数据时用）
+  PG_DSN       dbi:Pg:dbname=target_db;host=127.0.0.1;port=5432
+  PG_USER      postgres
+  PG_PWD       postgres
+
+  # 输出设置
+  OUTPUT_DIR   ./output
+  OUTPUT_FILE  output.sql
+
+  # 导出类型（每次只能一种，后续逐步修改）
+  TYPE         TABLE
+
+  # PL/SQL 转换
+  PLSQL_PGSQL  1
+  CONSTRAINTS  1
+
+  # 数据导出
+  DATA_LIMIT   10000
+  DROP_TABLE   1
+  TRUNCATE_TABLE 1
+
+  # <<<
+
+  # 如果容器 IP 不是 127.0.0.1，从第三步获取的容器 IP 替换：
+  # docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' oracle_free
+  # docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' postgres16
+
+
+================================================================================
+  第六步：测试连接
+================================================================================
+
+  # 测试 Oracle 连接
+  ora2pg -c ora2pg.conf -t SHOW_TABLE
+
+  成功时应列出所有表的清单。
+  
+  如果报错类似：
+    DBI connect failed: ORA-12154: TNS:could not resolve the connect identifier
+  => 检查 ORACLE_DSN 格式，确认 sid 是否正确
+
+  如果报错：
+    Can't locate DBD/Oracle.pm
+  => 需安装 DBD::Oracle 和 Oracle Instant Client
+
+  如果报错：
+    Can't connect to Oracle server: IO Error: The Network Adapter
+     could not establish the connection
+  => 检查容器是否启动完成，端口映射是否正确
+
+
+================================================================================
+  第七步：导出并转换（核心迁移）
+================================================================================
+
+  建议按以下顺序分步导出，每步验证后再下一步。
+
+  # -------------------------------------------------------
+  # 7.1 导出序列
+  # -------------------------------------------------------
+  ora2pg -c ora2pg.conf -t SEQUENCE -o 01_sequence.sql
+  cat output/01_sequence.sql   # 检查导出的序列
+
+  # -------------------------------------------------------
+  # 7.2 导出表结构
+  # -------------------------------------------------------
+  ora2pg -c ora2pg.conf -t TABLE -o 02_table.sql
+  cat output/02_table.sql
+
+  # -------------------------------------------------------
+  # 7.3 导出约束（主键、外键、唯一、CHECK）
+  # -------------------------------------------------------
+  ora2pg -c ora2pg.conf -t CONSTRAINT -o 03_constraint.sql
+  cat output/03_constraint.sql
+
+  # -------------------------------------------------------
+  # 7.4 导出索引
+  # -------------------------------------------------------
+  ora2pg -c ora2pg.conf -t INDEX -o 04_index.sql
+  cat output/04_index.sql
+
+  # -------------------------------------------------------
+  # 7.5 导出视图
+  # -------------------------------------------------------
+  ora2pg -c ora2pg.conf -t VIEW -o 05_view.sql
+  cat output/05_view.sql
+
+  # -------------------------------------------------------
+  # 7.6 导出触发器
+  # -------------------------------------------------------
+  ora2pg -c ora2pg.conf -t TRIGGER -o 06_trigger.sql
+  cat output/06_trigger.sql
+
+  # -------------------------------------------------------
+  # 7.7 导出函数和存储过程
+  # -------------------------------------------------------
+  ora2pg -c ora2pg.conf -t FUNCTION -o 07_function.sql
+  cat output/07_function.sql
+
+  # -------------------------------------------------------
+  # 7.8 导出授权（GRANT）
+  # -------------------------------------------------------
+  ora2pg -c ora2pg.conf -t GRANT -o 08_grant.sql
+  cat output/08_grant.sql
+
+  # -------------------------------------------------------
+  # 7.9 导出数据（推荐 COPY 格式，速度快）
+  # -------------------------------------------------------
+  ora2pg -c ora2pg.conf -t COPY -o 09_data.sql
+
+  # 如果要导出为 INSERT 语句（兼容性更好但慢）：
+  # ora2pg -c ora2pg.conf -t INSERT -o 09_data_ins.sql
+
+  # -------------------------------------------------------
+  # 7.10 或者一次导出全部（方便但不好排查）
+  # -------------------------------------------------------
+  # ora2pg -c ora2pg.conf -t ALL -o all.sql
+
+
+================================================================================
+  第八步：审查转换后的 SQL
+================================================================================
+
+  重点检查以下内容（结合 迁移.txt 和 迁移1.txt 的知识）：
+
+  # 检查示例
+  echo "=== 检查序列 ==="
+  grep -n "NEXTVAL\|CURRVAL\|START WITH" output/01_sequence.sql
+
+  echo "=== 检查数据类型 ==="
+  grep -n "NUMBER\|VARCHAR2\|CLOB\|BLOB\|DATE\|TIMESTAMP" output/02_table.sql
+
+  echo "=== 检查 PL/SQL 转换 ==="
+  grep -n "BEGIN\|DECLARE\|IS\|AS\|LANGUAGE" output/07_function.sql | head -20
+
+  echo "=== 检查触发器 ==="
+  grep -n "NEW\|OLD\|EXECUTE FUNCTION" output/06_trigger.sql | head -20
+
+  常见需手工修正的问题：
+  - NVL / NVL2 是否转为 COALESCE
+  - SYSDATE 是否转为 CURRENT_TIMESTAMP
+  - ROWNUM 是否转为 LIMIT
+  - CONNECT BY 是否转为 WITH RECURSIVE
+  - DECODE 是否转为 CASE
+  - :NEW 是否转为 NEW（无冒号）
+  - 函数 RETURN 是否转为 RETURNS
+  - 存储过程/函数的 IS 是否转为 AS
+  - 包（PACKAGE）是否正确拆解
+
+
+================================================================================
+  第九步：导入 PostgreSQL
+================================================================================
+
+  # -------------------------------------------------------
+  # 9.1 按依赖顺序导入（先序列，再表，再约束...）
+  # -------------------------------------------------------
+  for f in 01_sequence.sql 02_table.sql 03_constraint.sql \
+           04_index.sql 05_view.sql 06_trigger.sql \
+           07_function.sql 08_grant.sql; do
+    echo "=== Importing: $f ==="
+    docker exec -i postgres16 psql -U postgres -d target_db < output/$f
+  done
+
+  # 或直接通过主机 psql（如果已安装）
+  # for f in output/*.sql; do
+  #   psql -h 127.0.0.1 -U postgres -d target_db -f $f
+  # done
+
+  # -------------------------------------------------------
+  # 9.2 导入数据前禁用触发器和约束（加速）
+  # -------------------------------------------------------
+  docker exec -i postgres16 psql -U postgres -d target_db \
+    -c "SET session_replication_role = 'replica';"
+
+  # 导入数据
+  docker exec -i postgres16 psql -U postgres -d target_db < output/09_data.sql
+
+  # 恢复触发器
+  docker exec -i postgres16 psql -U postgres -d target_db \
+    -c "SET session_replication_role = 'origin';"
+
+
+================================================================================
+  第十步：验证迁移结果
+================================================================================
+
+  # 10.1 检查对象数量
+  docker exec -i postgres16 psql -U postgres -d target_db <<< "
+    SELECT schemaname, relkind, COUNT(*)
+    FROM pg_stat_user_tables
+    GROUP BY schemaname, relkind;
+  "
+
+  docker exec -i postgres16 psql -U postgres -d target_db <<< "
+    SELECT proname, pronargs
+    FROM pg_proc
+    WHERE pronamespace = 'public'::regnamespace
+      AND prolang = 1;
+  "
+
+  # 10.2 检查序列
+  docker exec -i postgres16 psql -U postgres -d target_db -c "\ds"
+
+  # 10.3 检查索引
+  docker exec -i postgres16 psql -U postgres -d target_db -c "\di"
+
+  # 10.4 检查视图
+  docker exec -i postgres16 psql -U postgres -d target_db -c "\dv"
+
+  # 10.5 检查表和数据行数
+  docker exec -i postgres16 psql -U postgres -d target_db -c "
+    SELECT schemaname, relname, n_live_tup
+    FROM pg_stat_user_tables
+    ORDER BY schemaname, relname;
+  "
+
+  # 10.6 简单查询验证
+  docker exec -i postgres16 psql -U postgres -d target_db -c "SELECT * FROM emp;"
+  docker exec -i postgres16 psql -U postgres -d target_db -c "SELECT * FROM dept;"
+
+  # 10.7 验证函数是否可执行
+  docker exec -i postgres16 psql -U postgres -d target_db -c "
+    SELECT proname, pronargs, prosrc
+    FROM pg_proc
+    WHERE pronamespace = 'public'::regnamespace
+      AND prolang = 1;
+  "
+
+
+================================================================================
+  第十一步：清理（实验结束后）
+================================================================================
+
+  # 停止并删除容器
+  docker stop oracle_free postgres16
+  docker rm oracle_free postgres16
+
+  # 如果要同时删除镜像
+  docker rmi container-registry.oracle.com/database/free:latest postgres:16
+
+
+================================================================================
+  常见问题排查
+================================================================================
+
+  Q1: Oracle 容器启动报错 "ORA-12514: TNS listener does not know..."
+  -> 容器可能还在初始化中，等 10-15 分钟再试
+  -> 查看状态: docker logs oracle_free
+
+  Q2: ora2pg 报 "Can't locate DBD/Oracle.pm"
+  -> 需要安装 Oracle Instant Client + DBD::Oracle
+  -> 或者用 Docker 方式运行 ora2pg
+
+  Q3: PostgreSQL 连不上
+  -> 检查容器是否运行: docker ps
+  -> 检查端口映射: docker port postgres16
+
+  Q4: 数据导出的 COPY 格式导入报错
+  -> 检查特殊字符转义，必要时改用 INSERT 格式导出
+  -> 或使用: SET client_encoding = 'UTF8';
+
+  Q5: 函数/过程编译报错
+  -> 查看错误信息，对照 迁移.txt 中的语法差异表修改
+  -> 常见问题：缺少 $$ 结束符、RETURN -> RETURNS 未改、
+     IS -> AS 未改、异常名不匹配
+
+  Q6: Oracle 容器时区不对
+  -> 启动时加 -e TZ=Asia/Shanghai
+
+
+================================================================================
+  附录：快速命令速查卡
+================================================================================
+
+  # ---------- 容器管理 ----------
+  docker ps                              # 查看运行中的容器
+  docker logs oracle_free                # 查看 Oracle 启动日志
+  docker exec -it oracle_free bash       # 进入容器 shell
+  docker exec -it postgres16 psql -U postgres -d target_db  # 连 PG
+
+  # ---------- Oracle 操作 ----------
+  docker exec oracle_free sqlplus system/oracle@//localhost:1521/FREE
+  docker exec oracle_free sqlplus user/pass@//localhost:1521/FREEPDB1
+
+  # ---------- ora2pg 操作 ----------
+  ora2pg -c ora2pg.conf -t SHOW_TABLE                           # 查看表
+  ora2pg -c ora2pg.conf -t SHOW_TABLE -o report.html            # 报告
+  ora2pg -c ora2pg.conf -t TYPE -o output.sql                   # 导出
+  ora2pg -c ora2pg.conf -t COPY -o data.sql -j 4                # 并行导出数据
+
+  # ---------- PostgreSQL 操作 ----------
+  psql -h 127.0.0.1 -U postgres -d target_db                    # 连接
+  psql -h 127.0.0.1 -U postgres -d target_db -f file.sql        # 导入
+  psql -h 127.0.0.1 -U postgres -d target_db -c "COMMAND"       # 执行单条
+
+================================================================================

@@ -1,0 +1,81 @@
+# ============================================
+# Oracle => PostgreSQL 迁移实验环境
+# 镜像版本：
+#   - Oracle:  container-registry.oracle.com/database/free:latest
+#   - PG:      postgres:16
+#   - ora2pg:  georgmoser/ora2pg:18.2
+# ============================================
+name: ora2pg-migration
+
+networks:
+  ora2pg-net:
+    driver: bridge
+
+services:
+
+  # ========== Oracle Free Database ==========
+  oracle:
+    image: container-registry.oracle.com/database/free:latest
+    container_name: oracle_free
+    hostname: oracle_free
+    networks:
+      - ora2pg-net
+    ports:
+      - "1521:1521"
+      - "5500:5500"
+    environment:
+      ORACLE_PWD: oracle
+      ORACLE_CHARACTERSET: AL32UTF8
+    volumes:
+      - oracle_data:/opt/oracle/oradata
+      - ./outputs/sample-oracle.sql:/tmp/sample-oracle.sql
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo 'SELECT 1 FROM DUAL;' | sqlplus system/oracle@//localhost:1521/FREE > /dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 180s
+
+  # ========== PostgreSQL 16 ==========
+  postgres:
+    image: postgres:16
+    container_name: postgres16
+    hostname: postgres16
+    networks:
+      - ora2pg-net
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: target_db
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ========== ora2pg 迁移工具 ==========
+  ora2pg:
+    platform: linux/amd64
+    image: georgmoser/ora2pg:18.2
+    container_name: ora2pg_runner
+    hostname: ora2pg_runner
+    networks:
+      - ora2pg-net
+    working_dir: /work
+    volumes:
+      - ./config:/work/config
+      - ./scripts:/work/scripts
+      - ./outputs:/work/outputs
+    command: ["tail", "-f", "/dev/null"]
+    depends_on:
+      oracle:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+volumes:
+  oracle_data:
+  pg_data:

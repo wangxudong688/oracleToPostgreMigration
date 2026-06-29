@@ -1,0 +1,908 @@
+================================================================================
+  Oracle => PostgreSQL 迁移指南 (ora2pg)
+================================================================================
+  迁移内容：表、索引、视图、PL/SQL、函数、触发器、约束、存储过程、临时表等
+================================================================================
+
+
+================================================================================
+  第一部分：ora2pg 迁移步骤
+================================================================================
+
+以下基于 ora2pg v24.x，配置文件和命令以实际版本为准。
+
+--------------------------------------------------------------------------------
+  1.1 安装 ora2pg
+--------------------------------------------------------------------------------
+
+  # 通过 CPAN 安装（推荐）
+  cpan install DBD::Oracle
+  cpan install DBD::Pg
+  cpan install ora2pg
+
+  # 或通过系统包管理器（以 macOS Homebrew 为例）
+  brew install ora2pg
+
+  # 验证安装
+  ora2pg --version
+
+  依赖说明：
+    - DBD::Oracle 需要安装 Oracle Instant Client 并配置环境变量
+    - DBD::Pg 需要安装 PostgreSQL 客户端库 (libpq)
+
+
+--------------------------------------------------------------------------------
+  1.2 配置 ora2pg.conf
+--------------------------------------------------------------------------------
+
+  # 生成默认配置文件
+  ora2pg --init_project my_migration
+
+  # 或复制模板手动编辑
+  cp /usr/local/etc/ora2pg/ora2pg.conf.dist ./ora2pg.conf
+
+  # 关键配置项（编辑 ora2pg.conf）
+
+  ## --- Oracle 数据库连接 ---
+  ORACLE_DSN     dbi:Oracle:host=oracle_host;sid=ORCL;port=1521
+  ORACLE_USER    scott
+  ORACLE_PWD     tiger
+
+  ## --- PostgreSQL 数据库连接（数据导出时使用） ---
+  PG_DSN         dbi:Pg:dbname=target_db;host=pg_host;port=5432
+  PG_USER        pg_user
+  PG_PWD         pg_pass
+
+  ## --- 模式/用户过滤 ---
+  SCHEMA         SCOTT          # 要迁移的 Oracle Schema
+  USER_GRANTS    1              # 导出用户权限
+
+  ## --- 导出类型（每次只能设置一种导出类型） ---
+  # 常用值：
+  #   SHOW_TABLE       - 查看可迁移的表的清单
+  #   TABLE            - 导出表结构
+  #   VIEW             - 导出视图
+  #   GRANT            - 导出授权
+  #   INDEX            - 导出索引
+  #   TRIGGER          - 导出触发器
+  #   SEQUENCE         - 导出序列
+  #   FUNCTION         - 导出函数/存储过程
+  #   TABLESPACE       - 导出表空间
+  #   FDW              - 导出外部表
+  #   INSERT           - 导出表数据 (INSERT 语句)
+  #   COPY             - 导出表数据 (COPY 格式，推荐)
+  #   ALL              - 导出全部对象
+  TYPE              TABLE
+
+  ## --- 表过滤 ---
+  INCLUDE_TABLE     ^(EMP|DEPT)   # 只迁移匹配正则的表
+  EXCLUDE_TABLE     ^TEMP_        # 排除匹配正则的表
+
+  ## --- 导出时的类型映射 ---
+  REPLACE_TABLESPACE  1          # 表空间名替换为 pg 默认
+  DROP_INDEXES        0          # 不在导出脚本中加入 DROP
+
+  ## --- PL/SQL 转换 ---
+  PLSQL_PGSQL        1           # 启用 PL/SQL => PL/pgSQL 自动转换
+  EXTERNAL_TO_FDW    1           # Oracle 外部表 => PostgreSQL FDW
+  CONSTRAINTS        1           # 导出约束
+
+  ## --- 数据导出 ---
+  DATA_LIMIT         10000       # 每次取数据的行数
+  TRUNCATE_TABLE     1           # 在 INSERT 前加 TRUNCATE
+  DISABLE_TRIGGERS   1           # 导入数据前禁用触发器
+  DROP_TABLE          1          # 导入前 DROP 已有表
+
+  ## --- 输出 ---
+  OUTPUT_DIR          ./output   # 输出目录
+  OUTPUT_FILE          output.sql # 输出文件名
+
+
+--------------------------------------------------------------------------------
+  1.3 阶段一：评估与规划
+--------------------------------------------------------------------------------
+
+  目的：预估迁移工作量，识别不兼容对象。
+
+  # 生成评估报告（HTML 格式）
+  ora2pg -c ora2pg.conf -t SHOW_TABLE -o report.html
+
+  # 对所有对象做全面评估
+  ora2pg -c ora2pg.conf -t SHOW_REPORT --estimate_cost
+
+  # 输出内容：
+  #   - 各对象预估行数
+  #   - 人工评估迁移天数
+  #   - 不兼容对象列表（需要手工修改的部分）
+
+
+--------------------------------------------------------------------------------
+  1.4 阶段二：导出 Schema（结构）
+--------------------------------------------------------------------------------
+
+  按顺序分别导出各类对象，建议逐步验证。
+
+  # (1) 导出 序列（SEQUENCE）
+  ora2pg -c ora2pg.conf -t SEQUENCE -o sequence.sql
+
+  # (2) 导出 表结构（TABLE）
+  ora2pg -c ora2pg.conf -t TABLE -o table.sql
+
+  # (3) 导出 约束（CONSTRAINT）
+  ora2pg -c ora2pg.conf -t CONSTRAINT -o constraint.sql
+
+  # (4) 导出 索引（INDEX）
+  ora2pg -c ora2pg.conf -t INDEX -o index.sql
+
+  # (5) 导出 触发器（TRIGGER）
+  ora2pg -c ora2pg.conf -t TRIGGER -o trigger.sql
+
+  # (6) 导出 视图（VIEW）
+  ora2pg -c ora2pg.conf -t VIEW -o view.sql
+
+  # (7) 导出 函数 / 存储过程（FUNCTION）
+  ora2pg -c ora2pg.conf -t FUNCTION -o function.sql
+
+  # (8) 导出 授权（GRANT）
+  ora2pg -c ora2pg.conf -t GRANT -o grant.sql
+
+  # (9) 或一次性导出全部
+  ora2pg -c ora2pg.conf -t ALL -o all_schema.sql
+
+  # 注释：
+  #   - 函数/存储过程以外的 PL/SQL（如包、包体）需要另设
+  #   - PACKAGE / PACKAGE_BODY 分别用 -t PACKAGE / -t PACKAGE_BODY
+
+
+--------------------------------------------------------------------------------
+  1.5 阶段三：导出数据
+--------------------------------------------------------------------------------
+
+  推荐使用 COPY 格式（更快），然后用 psql 导入。
+
+  # 导出为 COPY 格式（默认按 COPY 命令导出）
+  ora2pg -c ora2pg.conf -t COPY -o data.sql
+
+  # 或导出为 INSERT 语句（兼容性更好但慢）
+  ora2pg -c ora2pg.conf -t INSERT -o data_insert.sql
+
+  # 对大表可按表拆分导出（在配置中设置 INCLUDE/EXCLUDE 表）
+  ora2pg -c ora2pg.conf -t COPY -o data_large.sql
+
+  # 并行导出数据（多线程）
+  ora2pg -c ora2pg.conf -t COPY -o data_parallel.sql -j 4
+
+
+--------------------------------------------------------------------------------
+  1.6 阶段四：手工修改导出脚本
+--------------------------------------------------------------------------------
+
+  ora2pg 自动转换大部分语法，但以下内容需要人工审查修改：
+
+  1) 数据类型映射错误（详见第二部分）
+  2) PL/SQL 中 NOTICE / RAISE 语法
+  3) 函数返回值类型
+  4) Oracle 特有函数调用（详见第二部分）
+  5) 临时表会话级/事务级差异
+  6) 包（PACKAGE）拆解为独立函数或 Schema
+  7) NCHAR/NVARCHAR2 字符集问题
+  8) 物化视图（MATERIALIZED VIEW）转换
+
+
+--------------------------------------------------------------------------------
+  1.7 阶段五：导入 PostgreSQL
+--------------------------------------------------------------------------------
+
+  # 创建目标数据库
+  createdb -U pg_user -E UTF8 target_db
+
+  # 按依赖顺序导入
+  psql -U pg_user -d target_db -f sequence.sql
+  psql -U pg_user -d target_db -f table.sql
+  psql -U pg_user -d target_db -f constraint.sql
+  psql -U pg_user -d target_db -f index.sql
+  psql -U pg_user -d target_db -f view.sql
+  psql -U pg_user -d target_db -f trigger.sql
+  psql -U pg_user -d target_db -f function.sql
+  psql -U pg_user -d target_db -f grant.sql
+
+  # 导入数据（先禁用触发器和约束可加速）
+  psql -U pg_user -d target_db \
+    -c "SET session_replication_role = 'replica';"
+  psql -U pg_user -d target_db -f data.sql
+  psql -U pg_user -d target_db \
+    -c "SET session_replication_role = 'origin';"
+
+  # 或一次性导入全部
+  psql -U pg_user -d target_db -f all_schema.sql
+
+
+--------------------------------------------------------------------------------
+  1.8 阶段六：验证与修复
+--------------------------------------------------------------------------------
+
+  # (1) 对比对象数量
+  -- Oracle
+  SELECT owner, object_type, COUNT(*)
+    FROM dba_objects GROUP BY owner, object_type;
+  -- PostgreSQL
+  SELECT schemaname, relkind, COUNT(*)
+    FROM pg_stat_user_tables GROUP BY schemaname, relkind;
+
+  # (2) 对比行数
+  -- 编写脚本遍历所有表对比 COUNT(*)
+
+  # (3) 测试每个存储过程/函数是否可编译运行
+  SELECT proname, pronargs
+    FROM pg_proc
+    WHERE pronamespace = 'public'::regnamespace
+      AND prolang = 1;
+
+  # (4) 应用功能回归测试
+
+  # (5) 性能验证（执行计划对比、索引使用情况）
+
+
+================================================================================
+  第二部分：Oracle 与 PostgreSQL 语法差异 & 迁移后需修改的内容
+================================================================================
+
+--------------------------------------------------------------------------------
+  2.1 数据类型映射
+--------------------------------------------------------------------------------
+
+  Oracle               PostgreSQL              说明
+  ----------------------------------------------------------------------
+  NUMBER(p,s)          NUMERIC(p,s)            定点数，直接映射
+  NUMBER               NUMERIC / DOUBLE PREC  无精度时可能需视场景选择
+  VARCHAR2(n)          VARCHAR(n) / TEXT       VARCHAR2 用 VARCHAR 替换
+  NVARCHAR2(n)         VARCHAR(n)              NVARCHAR2 需注意字符集转换
+  CHAR(n)               CHAR(n)                基本兼容
+  NCHAR(n)              CHAR(n)                NCHAR 注意字符集差异
+  CLOB                  TEXT                    CLOB 映射为 TEXT
+  BLOB                  BYTEA                  BLOB 映射为 BYTEA
+  BFILE                 不直接支持             需要迁移为 BYTEA + 应用改造
+  LONG                  TEXT                    LONG 类型需手动改造
+  LONG RAW              BYTEA                  类似
+  RAW(n)                BYTEA                  RAW 映射为 BYTEA
+  ROWID                 OID / 无               无直接等价，Oracle 专用
+  UROWID                无                     需要应用改造
+  DATE                  TIMESTAMP(0)           Oracle DATE 含时间，映射后需测试
+  TIMESTAMP             TIMESTAMP              基本兼容
+  TIMESTAMP WITH TZ     TIMESTAMPTZ            映射为 TIMESTAMPTZ
+  INTERVAL DAY TO SEC   INTERVAL              基本兼容
+  FLOAT                 DOUBLE PRECISION      浮点映射
+  BINARY_FLOAT          REAL                  单精度浮点
+  BINARY_DOUBLE         DOUBLE PRECISION      双精度浮点
+  SYS_REFCURSOR         REFCURSOR             基本兼容，语法有差异
+  XMLTYPE               XML                   PostgreSQL 原生支持 XML
+  MDSYS.SDO_GEOMETRY    PostGIS geometry      需安装 PostGIS 扩展
+
+
+--------------------------------------------------------------------------------
+  2.2 SQL 语法差异
+--------------------------------------------------------------------------------
+
+  2.2.1 字符串处理
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  'abc' || 'def'        'abc' || 'def'          拼接兼容
+  CONCAT(a, b)          a || b / CONCAT(a, b)   CONCAT 兼容
+  NVL(expr, repl)       COALESCE(expr, repl)    NVL 不存在，用 COALESCE
+  NVL2(expr, v1, v2)    CASE WHEN expr IS NOT   NVL2 需改写 CASE
+                          NULL THEN v1 ELSE v2
+                          END
+  DECODE(expr,s1,r1..)  CASE WHEN expr=s1        DECODE 无等价，改 CASE
+                          THEN r1 ...
+  LPAD / RPAD           LPAD / RPAD             兼容
+  LTRIM / RTRIM/TRIM    LTRIM / RTRIM/TRIM      兼容
+  SUBSTR(str,p,len)     SUBSTR / SUBSTRING      兼容
+  INSTR(str,sub)        POSITION / STRPOS       INSTR 需改写
+  LENGTH(str)           LENGTH / CHAR_LENGTH   兼容
+  REPLACE               REPLACE                 兼容
+  REGEXP_LIKE           ~ 操作符 /              完全匹配语法不同
+                        REGEXP_MATCHES
+  REGEXP_SUBSTR         REGEXP_MATCHES /        参数顺序有差异
+                        SUBSTRING
+  REGEXP_REPLACE        REGEXP_REPLACE          兼容（参数顺序注意）
+  REGEXP_INSTR          无直接等价              需改写
+
+
+  2.2.2 日期与时间
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  SYSDATE               CURRENT_TIMESTAMP /     SYSDATE 无直接等价
+                          NOW()
+  SYSTIMESTAMP          CURRENT_TIMESTAMP       类似
+  TRUNC(SYSDATE)        DATE_TRUNC('day',       TRUNC 日期用法不同
+                          NOW())
+  TO_DATE(str,fmt)      TO_DATE(str,fmt)        基本兼容
+  TO_CHAR(date,fmt)     TO_CHAR(date,fmt)       兼容（格式串可能不同）
+  ADD_MONTHS(d,n)       d + INTERVAL '1 month' 无直接等价函数
+                          * n
+  MONTHS_BETWEEN(d1,d2) EXTRACT + 运算          无直接等价
+  EXTRACT               EXTRACT                 兼容
+  LAST_DAY(d)           无直接等价              DATE_TRUNC + 模拟
+  NEXT_DAY(d,dow)       无直接等价              需自定义函数
+  ROUND(d)              DATE_TRUNC + 运算       有差异
+  TRUNC(d)              DATE_TRUNC              功能类似，用法不同
+  INTERVAL '1' DAY      INTERVAL '1 day'        语法有差异
+  NUMTODSINTERVAL       INTERVAL 'n' unit /     需改写
+
+  格式串差异 (TO_CHAR / TO_DATE)：
+    Oracle              PostgreSQL
+    --------------------------------------------
+    YYYY-MM-DD          YYYY-MM-DD             基本兼容
+    DD-MON-YYYY         DD-Mon-YYYY            MON/Mon 大小写含义不同
+    HH24:MI:SS          HH24:MI:SS             兼容
+    FM 前缀             无 FM 概念              需去掉 FM
+
+
+  2.2.3 数值函数
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  ROUND(n,d)            ROUND(n,d)              兼容
+  TRUNC(n,d)            TRUNC(n,d)              兼容
+  MOD(n,d)              MOD(n,d)                兼容
+  FLOOR / CEIL          FLOOR / CEIL            兼容
+  ABS                    ABS                    兼容
+  GREATEST / LEAST      GREATEST / LEAST        兼容
+  SIGN                   SIGN                   兼容
+  SQRT                   SQRT                   兼容
+  POWER                  POWER                  兼容
+  EXP / LN              EXP / LN                兼容
+
+
+  2.2.4 伪列与特殊查询
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  ROWNUM                LIMIT / OFFSET          Oracle 伪列 => LIMIT
+  ROWID                 无                      需要改造应用逻辑
+  LEVEL / CONNECT BY    无 / WITH RECURSIVE     层级查询语法完全不同
+  START WITH ...         WITH RECURSIVE ...     整套语法重写
+    CONNECT BY
+  DUAL                  不需要 / RETURNING       DUAL 可去掉或创建视图
+  SYSDATE               NOW() /                 替换
+                          CURRENT_TIMESTAMP
+  USER                  CURRENT_USER /          替换
+                          SESSION_USER
+  UID                   无                      需改造
+
+
+--------------------------------------------------------------------------------
+  2.3 语言级差异 (PL/SQL vs PL/pgSQL)
+--------------------------------------------------------------------------------
+
+  2.3.1 基本结构
+
+  Oracle (PL/SQL)                 PostgreSQL (PL/pgSQL)
+  ---------------------------------------------------------------
+  CREATE OR REPLACE PROCEDURE     CREATE OR REPLACE PROCEDURE
+    (p_id IN NUMBER)                (p_id INT)
+  IS                              LANGUAGE plpgsql AS $$
+  BEGIN                           BEGIN
+    NULL;                           NULL;
+  END;                            END; $$;
+
+  CREATE OR REPLACE FUNCTION      CREATE OR REPLACE FUNCTION
+    (p_id IN NUMBER)                (p_id INT)
+    RETURN NUMBER                   RETURNS INT
+  IS                              LANGUAGE plpgsql AS $$
+  BEGIN                           BEGIN
+    RETURN 1;                       RETURN 1;
+  END;                            END; $$;
+
+
+  2.3.2 变量声明
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  v_name VARCHAR2(100)   v_name VARCHAR(100)     兼容
+  v_num  NUMBER(10,2)    v_num  NUMERIC(10,2)    兼容
+  v_cur  SYS_REFCURSOR   v_cur  REFCURSOR        名称不同
+  v_row  emp%ROWTYPE     v_row  emp%ROWTYPE      兼容
+  v_id   emp.id%TYPE     v_id   emp.id%TYPE      兼容
+  TYPE t_tab IS TABLE   无直接等价              需用 ARRAY 或临时表
+    OF ...
+  %TYPE 和 %ROWTYPE      %TYPE 和 %ROWTYPE      兼容
+
+  嵌套表和 varray 需要改写为 PostgreSQL ARRAY 类型。
+
+
+  2.3.3 赋值
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  v_name := 'Hello';     v_name := 'Hello';      兼容
+  SELECT col INTO v_var   SELECT col INTO v_var   兼容
+  SELECT ... BULK COLLECT  无直接等价            需用 ARRAY 或循环替代
+
+
+  2.3.4 控制结构
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  IF ... THEN ...        IF ... THEN ...         兼容
+    ELSIF ... THEN ...     ELSIF ... THEN ...    兼容
+    ELSE ...               ELSE ...
+    END IF;                END IF;
+  LOOP / EXIT            LOOP / EXIT             兼容
+  FOR i IN 1..10 LOOP    FOR i IN 1..10 LOOP     兼容
+  WHILE cond LOOP        WHILE cond LOOP         兼容
+  EXIT WHEN cond         EXIT WHEN cond          兼容
+  CONTINUE WHEN cond     CONTINUE WHEN cond      兼容
+  CASE ... WHEN ...      CASE ... WHEN ...       兼容
+  GOTO                   GOTO                    兼容（不推荐）
+
+
+  2.3.5 游标（CURSOR）
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  CURSOR c IS SELECT     DECLARE c CURSOR        语法微调
+                            FOR SELECT
+  OPEN c                 OPEN c                  兼容
+  FETCH c INTO v         FETCH c INTO v          兼容
+  CLOSE c                CLOSE c                 兼容
+  FOR rec IN c LOOP      FOR rec IN c LOOP       兼容
+  FOR rec IN (SELECT)    FOR rec IN (SELECT)     兼容
+  CURSOR(p_id) WITH      REFCURSOR               有差异
+    RETURN
+  SYS_REFCURSOR          REFCURSOR               名称不同
+
+
+  2.3.6 异常处理
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  EXCEPTION              EXCEPTION               兼容
+    WHEN NO_DATA_FOUND     WHEN NO_DATA_FOUND    兼容
+    WHEN TOO_MANY_ROWS     WHEN TOO_MANY_ROWS    兼容
+    WHEN DUP_VAL_ON_INDEX  WHEN unique_violation 名称不同
+    WHEN OTHERS            WHEN OTHERS           兼容
+    SQLCODE / SQLERRM      SQLSTATE / SQLERRM    SQLCODE 不同，需改
+    DBMS_OUTPUT.PUT_LINE   RAISE NOTICE          输出函数不同
+    RAISE_APPLICATION      RAISE EXCEPTION       语法不同
+      _ERROR
+
+  常用异常名对照：
+    Oracle                  PostgreSQL
+    -------------------------------------------------
+    NO_DATA_FOUND           NO_DATA_FOUND
+    TOO_MANY_ROWS           TOO_MANY_ROWS
+    DUP_VAL_ON_INDEX        unique_violation
+    ZERO_DIVIDE             division_by_zero
+    VALUE_ERROR             string_data_right_truncation
+    CASE_NOT_FOUND          case_not_found
+    OTHERS                  OTHERS
+
+
+  2.3.7 事务控制
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  COMMIT / ROLLBACK      COMMIT / ROLLBACK       兼容
+  SAVEPOINT sp1          SAVEPOINT sp1           兼容
+  SET TRANSACTION        SET TRANSACTION         兼容
+  PRAGMA AUTONOMOUS_TRANSACTION  无直接等价      需用 dblink /
+                                                 独立会话模拟
+  COMMIT in function     不允许                  PostgreSQL 函数中
+                                                 不能提交
+
+
+  2.3.8 动态 SQL
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  EXECUTE IMMEDIATE      EXECUTE                 兼容
+  USING ... INTO ...     USING ... INTO ...      兼容
+  DBMS_SQL               无                     用 EXECUTE 替代
+
+
+--------------------------------------------------------------------------------
+  2.4 DDL 差异
+--------------------------------------------------------------------------------
+
+  2.4.1 临时表
+
+  Oracle                         PostgreSQL
+  ------------------------------------------------------------------
+  CREATE GLOBAL TEMPORARY        CREATE TEMPORARY TABLE
+    TABLE t (id NUMBER)            t (id INT)
+    ON COMMIT DELETE ROWS;         ON COMMIT DELETE ROWS;
+  -- 会话级临时表                  ON COMMIT PRESERVE ROWS; -- 默认
+  ON COMMIT PRESERVE ROWS;
+
+  差异要点：
+    - Oracle 临时表是全局的（所有会话可见结构）
+    - PostgreSQL 临时表是会话级（每个会话有自己的副本）
+    - PostgreSQL 临时表默认在会话结束自动 DROP
+    - 迁移时建议使用 ON COMMIT DELETE ROWS，并改造应用逻辑
+
+
+  2.4.2 序列（SEQUENCE）
+
+  Oracle                         PostgreSQL
+  ------------------------------------------------------------------
+  CREATE SEQUENCE seq            CREATE SEQUENCE seq
+    START 1;                       START 1;
+  seq.NEXTVAL                    NEXTVAL('seq')
+  seq.CURRVAL                    CURRVAL('seq')
+  ALTER SEQUENCE ... INCREMENT  兼容
+
+  差异要点：
+    - 引用方式：Oracle 用 seq.NEXTVAL，PG 用 NEXTVAL('seq')
+    - PostgreSQL 序列默认有 cache 和 cycle 属性
+    - 自增推荐用 GENERATED AS IDENTITY（PG 10+）
+
+
+  2.4.3 自增列（IDENTITY）
+
+  Oracle (12c+)                  PostgreSQL
+  ------------------------------------------------------------------
+  id NUMBER GENERATED            id INT GENERATED
+    AS IDENTITY                    BY DEFAULT AS IDENTITY
+    (START WITH 1)                 (START WITH 1)
+
+  传统方式（ID + 触发器 + 序列）：
+    在 PostgreSQL 中可用 GENERATED AS IDENTITY 或 SERIAL
+  CREATE TABLE t (id INT GENERATED BY DEFAULT AS IDENTITY);
+
+
+  2.4.4 约束（CONSTRAINT）
+
+  项目                         Oracle  PostgreSQL  说明
+  ------------------------------------------------------------------
+  PRIMARY KEY                  兼容    兼容
+  FOREIGN KEY                  兼容    兼容
+  UNIQUE                       兼容    兼容
+  CHECK                        兼容    兼容      注意函数调用限制
+  NOT NULL                     兼容    兼容
+  DEFERRABLE                   兼容    兼容
+  EXCLUDE 约束                 无      支持      PG 独有(GiST索引)
+
+  差异注意：
+    - Oracle 的 CHECK 中可以调用函数
+    - PostgreSQL 不允许在 CHECK 中包含易变(VOLATILE)函数
+
+
+  2.4.5 索引（INDEX）
+
+  Oracle                         PostgreSQL
+  ------------------------------------------------------------------
+  CREATE INDEX idx              CREATE INDEX idx     兼容
+    ON t(col);                    ON t(col);
+  CREATE BITMAP INDEX           CREATE INDEX ...     Bitmap 语法不同
+                                  WHERE ...
+  CREATE UNIQUE INDEX           CREATE UNIQUE INDEX 兼容
+  CREATE INDEX ON                CREATE INDEX ON     函数索引兼容
+    t(LOWER(col))                 t(LOWER(col))
+  CREATE INDEX ON t(col) LOCAL  分区索引语法不同     需要改造
+  REVERSE 索引                   无直接等价          需评估
+
+  差异注意：
+    - PostgreSQL 用 GIN 索引替代位图索引
+    - BRIN 索引在大型顺序数据上更优
+    - 分区索引语法差异大，需要重写
+
+
+  2.4.6 分区表（Partitioning）
+
+  Oracle                         PostgreSQL
+  ------------------------------------------------------------------
+  RANGE / LIST / HASH            RANGE / LIST / HASH  兼容
+  RANGE-HASH / RANGE-LIST       仅支持单级别         复合分区需改造
+  INTERVAL 分区                  无直接等价          需 pg_partman
+  PARTITION BY RANGE(col)        PARTITION BY         兼容
+    (PARTITION p1                  RANGE(col)
+    VALUES LESS THAN (100))       (PARTITION p1
+                                   FROM (...)
+                                   TO (...))
+  SUBPARTITION                   无                  需改造为单级分区
+
+
+  2.4.7 物化视图（Materialized View）
+
+  Oracle                         PostgreSQL
+  ------------------------------------------------------------------
+  CREATE MATERIALIZED VIEW       CREATE MATERIALIZED
+    mv AS SELECT ...               VIEW mv AS SELECT ...
+  REFRESH COMPLETE               REFRESH MATERIALIZED  全量刷新
+                                   VIEW mv
+  REFRESH FAST                   无自动增量刷新      需触发器或定时
+                                                      任务
+  REFRESH ON COMMIT              无自动刷新          需要手动触发
+
+
+  2.4.8 同义词（SYNONYM）
+
+  Oracle                     PostgreSQL
+  ----------------------------------------------------------------
+  CREATE SYNONYM s FOR t;    无直接等价   可用视图或 search_path
+  CREATE PUBLIC SYNONYM      无           可用 search_path 实现
+
+
+  2.4.9 数据库链接（Database Link）
+
+  Oracle                     PostgreSQL
+  ----------------------------------------------------------------
+  CREATE DATABASE LINK dblink dblink 扩展 / postgres_fdw（推荐）
+  SELECT * FROM t@dblink     通过 dblink() 或 postgres_fdw 外部表
+
+
+--------------------------------------------------------------------------------
+  2.5 触发器（TRIGGER）差异
+--------------------------------------------------------------------------------
+
+  Oracle                       PostgreSQL
+  ----------------------------------------------------------------
+  CREATE OR REPLACE TRIGGER    CREATE OR REPLACE FUNCTION
+    trg_name                     trigger_fn()
+    BEFORE INSERT ON t           RETURNS TRIGGER
+    FOR EACH ROW                 LANGUAGE plpgsql AS $$
+  BEGIN                        BEGIN
+    :NEW.col := ...;              NEW.col := ...;
+  END;                           RETURN NEW;
+                                END; $$;
+
+                                CREATE TRIGGER trg_name
+                                  BEFORE INSERT ON t
+                                  FOR EACH ROW
+                                  EXECUTE FUNCTION trigger_fn();
+
+  关键差异：
+    1) PostgreSQL 触发器逻辑在独立函数中定义
+    2) Oracle INSTEAD OF 触发器可用 RULE 模拟
+    3) :NEW / :OLD 前缀在 PG 中直接使用 NEW / OLD
+    4) 约束触发器在 PG 用 CONSTRAINT TRIGGER
+
+
+--------------------------------------------------------------------------------
+  2.6 函数（FUNCTION）差异细节
+--------------------------------------------------------------------------------
+
+  Oracle                 PostgreSQL              说明
+  ------------------------------------------------------------------
+  RETURN NUMBER          RETURNS INT /          类型名称不同
+                            RETURNS NUMERIC
+  DETERMINISTIC          IMMUTABLE              含义类似
+  PIPELINED              RETURNS SETOF / TABLE  管道函数需重写
+  TABLE FUNCTION         RETURNS TABLE          兼容
+  PARALLEL_ENABLE        无直接等价             PG 自动并行
+  RESULT_CACHE           无                     需用物化视图替代
+  IN / OUT / IN OUT      IN / OUT / INOUT       注意区别
+  DEFAULT 参数           DEFAULT                兼容
+
+
+--------------------------------------------------------------------------------
+  2.7 包（PACKAGE）差异
+--------------------------------------------------------------------------------
+
+  Oracle 的 PACKAGE 在 PostgreSQL 中没有直接对应概念。
+
+  迁移策略：
+    1) 将包中的函数/过程拆解为独立的 PostgreSQL 函数/过程
+    2) 或将包放在同一个 Schema 中（通过命名前缀区分）
+    3) 包中的全局变量需用临时表或自定义上下文函数模拟
+    4) 包初始化部分需拆解为独立的初始化函数
+
+
+--------------------------------------------------------------------------------
+  2.8 其他差异汇总
+--------------------------------------------------------------------------------
+
+  2.8.1 Oracle 内置包替代
+
+  Oracle                   PostgreSQL 替代
+  ----------------------------------------------------------------
+  DBMS_OUTPUT              RAISE NOTICE
+  DBMS_SQL                 EXECUTE（动态 SQL）
+  DBMS_JOB / SCHEDULER     pg_cron / pg_tle
+  DBMS_LOB                 大对象函数
+  UTL_FILE                 COPY + 文件函数
+  UTL_HTTP                 plpython3u + http 库
+  UTL_SMTP                 plpython3u + smtplib
+  UTL_TCP                  dblink / postgres_fdw
+  DBMS_RANDOM              RANDOM() / gen_random_uuid()
+  DBMS_STATS               ANALYZE
+  DBMS_METADATA            无                   系统 catalog 替代
+  DBMS_XMLGEN              无                   SQL/XML 函数替代
+  DBMS_FLASHBACK           无                   时间点查询（无等价）
+
+
+  2.8.2 MERGE 语句差异
+
+  Oracle                        PostgreSQL (15+)
+  ----------------------------------------------------------------
+  MERGE INTO t                  INSERT ... ON CONFLICT
+    USING s ON (t.id = s.id)      DO UPDATE / DO NOTHING
+    WHEN MATCHED THEN UPDATE     （即 UPSERT，PG 9.5+）
+    WHEN NOT MATCHED THEN INSERT
+
+  PostgreSQL 15+ 支持 MERGE（语法类似但细节差异）
+  早期版本只能用 INSERT ... ON CONFLICT 替代
+
+
+  2.8.3 窗口函数
+
+  窗口函数基本语法兼容，包括：
+    ROW_NUMBER() / RANK() / DENSE_RANK()        兼容
+    LEAD() / LAG() / FIRST_VALUE()              兼容
+    SUM() OVER (PARTITION BY ...)               兼容
+
+  唯一差异：
+    Oracle 的 KEEP (DENSE_RANK FIRST/LAST) 在 PG 中不支持
+    需要用子查询 + ROW_NUMBER 替代
+
+
+  2.8.4 字符串拼接与引用
+
+  差异项                     Oracle             PostgreSQL
+  ----------------------------------------------------------------
+  字符串字面量               'text'             'text'
+  标识符引用                 "name"              "name"        兼容
+  转义字符串                 无标准              E'...'
+  字符串+NULL连接            'A'||NULL='A'      'A'||NULL=NULL
+  CONCAT 函数                CONCAT('a','b')    'a' || 'b'
+  引用引用                   DBMS_ASSERT        quote_literal()
+
+  注意：Oracle 中字符串与 NULL 连接不返回 NULL
+        PostgreSQL 会返回 NULL，需逐个检查
+
+
+  2.8.5 权限与用户
+
+  Oracle                     PostgreSQL
+  ----------------------------------------------------------------
+  GRANT SELECT ON t TO u    GRANT SELECT ON t TO u  兼容
+  CREATE USER u             CREATE USER u           语法不同
+    IDENTIFIED BY p           WITH PASSWORD 'p'
+  ROLE                       ROLE                   概念不同
+  PROFILE                    无                     用参数配置替代
+  PUBLIC 同义词              search_path + PUBLIC    替代方案
+                              schema
+
+
+  2.8.6 字符集与排序规则
+
+  Oracle                     PostgreSQL
+  ----------------------------------------------------------------
+  NCHAR / NVARCHAR2         无                      用 VARCHAR + 编码
+  NLS_SORT / NLS_COMP       COLLATE                排序规则不同
+  AL32UTF8 / UTF8           UTF8 (encoding)        编码名称不同
+  NLS_LENGTH_SEMANTICS      无                      PG 默认字符语义
+  区分大小写                默认不区分(NLS设置)     默认区分(可建CI排序规则)
+
+
+  2.8.7 布尔类型
+
+  Oracle                     PostgreSQL
+  ----------------------------------------------------------------
+  无原生 BOOLEAN 类型        BOOLEAN 原生支持       迁移应用需改造
+  常用 'Y'/'N' 表示          TRUE / FALSE / NULL    强烈建议使用布尔类型
+  PL/SQL 有 BOOLEAN         PL/pgSQL 有 BOOLEAN    函数内兼容
+
+
+  2.8.8 默认值差异
+
+  Oracle                     PostgreSQL
+  ----------------------------------------------------------------
+  DEFAULT SYSDATE            DEFAULT CURRENT_TIMESTAMP
+  DEFAULT 0                  兼容
+  DEFAULT 'Y'                兼容
+  DEFAULT seq.NEXTVAL        DEFAULT NEXTVAL('seq')
+  DEFAULT NULL               兼容
+  DEFAULT SYS_GUID()         DEFAULT gen_random_uuid()  UUID 生成不同
+
+
+--------------------------------------------------------------------------------
+  2.9 常见迁移错误与排查
+--------------------------------------------------------------------------------
+
+  1) ERROR: relation "xxx" does not exist
+     => 检查 schema 名称和 search_path 设置
+
+  2) ERROR: function xxx(integer) does not exist
+     => 函数重载解析规则不同，检查参数数量/类型
+
+  3) ERROR: cannot use "xxx" in a non-volatile function
+     => 函数稳定性标记（IMMUTABLE/STABLE/VOLATILE）不正确
+
+  4) ERROR: "currval" is not yet defined
+     => 序列在当前会话未调用 NEXTVAL
+
+  5) ERROR: relation with OID xxx does not exist
+     => 引用不存在的序列/表
+
+  6) ERROR: column "xxx" is of type timestamp but expression is text
+     => 类型隐式转换规则不同，需要显式 CAST
+
+  7) ERROR: cannot insert into a generated always identity column
+     => 需要改用 GENERATED BY DEFAULT AS IDENTITY
+
+  8) ERROR: regular expression match ... no longer supported
+     => 正则表达式语法差异
+
+
+================================================================================
+  附录A：参考命令速查
+================================================================================
+
+  # 生成评估报告
+  ora2pg -c ora2pg.conf -t SHOW_TABLE -o report.html
+  ora2pg -c ora2pg.conf -t SHOW_REPORT --estimate_cost
+
+  # 导出各类对象
+  ora2pg -c ora2pg.conf -t SEQUENCE   -o 01_sequence.sql
+  ora2pg -c ora2pg.conf -t TABLE      -o 02_table.sql
+  ora2pg -c ora2pg.conf -t CONSTRAINT -o 03_constraint.sql
+  ora2pg -c ora2pg.conf -t INDEX      -o 04_index.sql
+  ora2pg -c ora2pg.conf -t VIEW       -o 05_view.sql
+  ora2pg -c ora2pg.conf -t TRIGGER    -o 06_trigger.sql
+  ora2pg -c ora2pg.conf -t FUNCTION   -o 07_function.sql
+  ora2pg -c ora2pg.conf -t GRANT      -o 08_grant.sql
+  ora2pg -c ora2pg.conf -t PACKAGE    -o 09_package.sql
+  ora2pg -c ora2pg.conf -t PACKAGE_BODY -o 10_package_body.sql
+  ora2pg -c ora2pg.conf -t COPY       -o 11_data.sql
+
+  # 导入
+  psql -U pg_user -d target_db -f 01_sequence.sql
+  psql -U pg_user -d target_db -f 02_table.sql
+  psql -U pg_user -d target_db -f 03_constraint.sql
+  psql -U pg_user -d target_db -f 04_index.sql
+  psql -U pg_user -d target_db -f 05_view.sql
+  psql -U pg_user -d target_db -f 06_trigger.sql
+  psql -U pg_user -d target_db -f 07_function.sql
+  psql -U pg_user -d target_db -f 08_grant.sql
+  psql -U pg_user -d target_db -f 09_package.sql
+  psql -U pg_user -d target_db -f 10_package_body.sql
+  psql -U pg_user -d target_db -f 11_data.sql
+
+  # 验证
+  psql -U pg_user -d target_db -c "\dt"
+  psql -U pg_user -d target_db -c "\di"
+  psql -U pg_user -d target_db -c "\dv"
+  psql -U pg_user -d target_db -c "\df"
+  psql -U pg_user -d target_db -c "\dT"
+
+
+================================================================================
+  附录B：最简 ora2pg.conf 配置模板
+================================================================================
+
+  # 以下为最简可行的 ora2pg.conf 配置：
+
+  ORACLE_DSN   dbi:Oracle:host=192.168.1.100;sid=ORCL;port=1521
+  ORACLE_USER  system
+  ORACLE_PWD   manager
+
+  SCHEMA       SOURCE_APP
+
+  TYPE         TABLE
+
+  PG_DSN       dbi:Pg:dbname=target_db;host=localhost;port=5432
+  PG_USER      pg_user
+  PG_PWD       pg_pass
+
+  OUTPUT_DIR   ./output
+  OUTPUT_FILE  output.sql
+
+  PLSQL_PGSQL  1
+  CONSTRAINTS  1
+
+
+================================================================================
+  附注
+================================================================================
+
+  - 文档基于 ora2pg v24.x / Oracle 19c / PostgreSQL 16
+  - 实际迁移中建议先用 SHOW_REPORT 评估，了解风险点再动手
+  - 强烈建议先在测试环境完成完整迁移验证，再执行生产迁移
+  - 大表数据迁移建议分批、限速，避免源库和目标库压力过大
+  - 迁移完成后务必进行完整的功能回归测试和数据一致性校验
+
+================================================================================
