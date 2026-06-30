@@ -1,0 +1,142 @@
+PostgreSQL 常用语句，按场景整理了一份：
+数据库 & 表管理
+-- 连接数据库
+psql -U username -d dbname -h host -p port
+
+-- 创建/删除数据库
+CREATE DATABASE dbname;
+DROP DATABASE dbname;
+
+-- 列出所有数据库
+\l
+
+-- 切换到数据库
+\c dbname
+
+-- 列出所有表
+\dt
+
+-- 查看表结构
+\d tablename
+
+-- 创建表
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(255) UNIQUE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 删除表
+DROP TABLE IF EXISTS tablename;
+
+-- 清空表（重置自增序列）
+TRUNCATE TABLE tablename RESTART IDENTITY;
+增删改查
+-- 插入
+INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com');
+INSERT INTO users (name, email) VALUES ('Bob', 'bob@example.com'), ('Carol', 'carol@example.com');
+
+-- 查询
+SELECT * FROM users;
+SELECT id, name FROM users WHERE name LIKE 'A%' ORDER BY created_at DESC LIMIT 10;
+
+-- 更新
+UPDATE users SET email = 'new@example.com' WHERE id = 1;
+
+-- 删除
+DELETE FROM users WHERE id = 1;
+聚合 & 分组
+SELECT department, COUNT(*), AVG(salary), MAX(salary), MIN(salary)
+FROM employees
+GROUP BY department
+HAVING COUNT(*) > 5
+ORDER BY AVG(salary) DESC;
+连接
+-- INNER / LEFT / RIGHT / FULL JOIN
+SELECT u.name, o.order_id, o.amount
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id
+WHERE o.amount IS NULL;  -- 没下过单的用户
+索引
+CREATE INDEX idx_users_email ON users(email);
+CREATE UNIQUE INDEX idx_users_email_unique ON users(email);
+CREATE INDEX idx_users_name_created ON users(name, created_at);
+
+-- 查看索引
+\di
+
+-- 删除索引
+DROP INDEX idx_users_email;
+进阶查询
+-- 分页
+SELECT * FROM users ORDER BY id LIMIT 20 OFFSET 40;
+
+-- 去重
+SELECT DISTINCT department FROM employees;
+
+-- 子查询
+SELECT * FROM users WHERE id IN (SELECT user_id FROM orders WHERE amount > 100);
+
+-- CTE (公用表表达式)
+WITH recent_orders AS (
+    SELECT user_id, SUM(amount) AS total
+    FROM orders
+    WHERE created_at >= NOW() - INTERVAL '30 days'
+    GROUP BY user_id
+)
+SELECT u.name, COALESCE(r.total, 0) AS total_30d
+FROM users u
+LEFT JOIN recent_orders r ON u.id = r.user_id;
+窗口函数
+SELECT name, department, salary,
+       RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS rank,
+       ROW_NUMBER() OVER (ORDER BY salary DESC) AS row_num,
+       LAG(salary) OVER (PARTITION BY department ORDER BY salary) AS prev_salary,
+       AVG(salary) OVER (PARTITION BY department) AS dept_avg
+FROM employees;
+事务
+BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+UPDATE accounts SET balance = balance + 100 WHERE id = 2;
+COMMIT;
+-- 或 ROLLBACK;
+常用函数
+-- 时间
+NOW(), CURRENT_DATE, AGE(timestamp, timestamp),
+DATE_TRUNC('month', created_at), EXTRACT(YEAR FROM created_at)
+
+-- 字符串
+LENGTH(), UPPER(), LOWER(), TRIM(), CONCAT(a, b),
+SUBSTRING('hello' FROM 2 FOR 3), REPLACE(str, old, new)
+
+-- 类型转换
+'123'::INTEGER, CAST('2024-01-01' AS DATE)
+
+-- 条件
+COALESCE(col, 'default'), NULLIF(a, b),
+CASE WHEN condition THEN result ELSE default END
+
+-- JSON / JSONB
+data->'key', data->>'key', data#>'{path,to,key}',
+jsonb_array_elements(data->'items')
+实用管理命令（psql 内）
+\dt          -- 列出表
+\di          -- 列出索引
+\dv          -- 列出视图
+\df          -- 列出函数
+\x           -- 扩展显示（行转列）
+\timing      -- 显示执行时间
+\o file.sql  -- 将输出写入文件
+\i file.sql  -- 执行 SQL 文件
+性能分析
+EXPLAIN SELECT * FROM users WHERE email = '...';
+EXPLAIN ANALYZE SELECT * FROM users WHERE email = '...';
+
+-- 查看慢查询（需要 pg_stat_statements 扩展）
+SELECT query, calls, total_time, rows
+FROM pg_stat_statements
+ORDER BY total_time DESC LIMIT 10;
+如果有想深入展开的方向（比如窗口函数、JSONB 操作、索引策略、备份恢复），可以继续聊。
+
+20:45
