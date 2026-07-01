@@ -1,0 +1,189 @@
+
+输入关键词
+
+腾讯云开发者社区  Ora2Pg完全指南：如何免费实现Oracle到PostgreSQL的无缝迁移
+Ora2Pg完全指南：如何免费实现Oracle到PostgreSQL的无缝迁移
+ 俞兰莎Rosalind  ·  2026-03-17 01:49:10 发布
+Ora2Pg完全指南：如何免费实现Oracle到PostgreSQL的无缝迁移
+【免费下载链接】ora2pg Ora2Pg is a free tool used to migrate an Oracle database to a PostgreSQL compatible schema. It connects your Oracle database, scan it automatically and extracts its structure or data, it then generates SQL scripts that you can load into PostgreSQL. 【免费下载链接】ora2pg 项目地址: https://gitcode.com/gh_mirrors/or/ora2pg
+
+Ora2Pg是一款免费工具，用于将Oracle数据库迁移到PostgreSQL兼容的架构。它连接到您的Oracle数据库，自动扫描并提取其结构或数据，然后生成可加载到PostgreSQL的SQL脚本。无论是从反向工程Oracle数据库到大型企业数据库迁移，还是简单地将一些Oracle数据复制到PostgreSQL数据库，Ora2Pg都能轻松应对，且不需要任何Oracle数据库知识，只需提供连接到Oracle数据库所需的参数。
+
+🚀 为什么选择Ora2Pg进行数据库迁移？
+Ora2Pg作为一款成熟的数据库迁移工具，具有以下核心优势：
+
+完全免费开源：无需支付许可费用，降低迁移成本
+自动化程度高：自动扫描Oracle数据库结构，减少手动操作
+全面的对象支持：支持表、视图、序列、索引、触发器、存储过程等几乎所有Oracle对象
+数据迁移灵活：可选择全量数据迁移或按WHERE子句筛选数据
+跨平台兼容性：可在任何操作系统上运行，包括Linux、Windows和macOS
+PostgreSQL版本支持：支持PostgreSQL 8.4及更高版本
+📋 Ora2Pg核心功能一览
+Ora2Pg提供了丰富的功能，满足不同迁移需求：
+
+完整数据库模式导出：包括表、视图、序列、索引，以及唯一键、主键、外键和检查约束
+权限导出：导出用户和组的授权/权限
+分区支持：导出范围/列表分区和子分区
+选择性导出：通过指定表名导出表的选择
+PL/SQL转换：提供一些基本的PLSQL代码到PLPGSQL的自动转换
+数据导出选项：支持INSERT或COPY语句导出数据
+BLOB支持：完全支持Oracle BLOB对象作为PG BYTEA
+迁移评估：提供Oracle数据库内容的报告、迁移成本评估和难度级别评估
+🔧 安装Ora2Pg的详细步骤
+系统要求
+Perl 5.10或更高版本
+DBI Perl模块（版本> 1.614）
+Oracle Instant Client或完整的Oracle安装
+针对Oracle数据库：DBD::Oracle Perl模块
+针对MySQL数据库：DBD::MySQL Perl模块
+针对SQL Server数据库：DBD::ODBC Perl模块和unixODBC包
+安装步骤
+安装Oracle Instant Client
+rpm -ivh oracle-instantclient12.2-basic-12.2.0.1.0-1.x86_64.rpm
+rpm -ivh oracle-instantclient12.2-devel-12.2.0.1.0-1.x86_64.rpm
+rpm -ivh oracle-instantclient12.2-sqlplus-12.2.0.1.0-1.x86_64.rpm
+安装必要的Perl模块
+perl -MCPAN -e 'install DBI'
+perl -MCPAN -e 'install DBD::Oracle'
+perl -MCPAN -e 'install DBD::Pg'
+安装Ora2Pg
+git clone https://gitcode.com/gh_mirrors/or/ora2pg
+cd ora2pg
+perl Makefile.PL
+make && make install
+⚙️ 配置Ora2Pg连接数据库
+Ora2Pg的配置非常简单，主要通过配置文件ora2pg.conf控制数据库迁移过程。以下是关键配置项：
+
+数据库连接设置
+ORACLE_DSN  dbi:Oracle:host=oradb_host;service_name=ORCL;port=1521
+ORACLE_USER scott
+ORACLE_PWD  tiger
+导出类型设置
+TYPE TABLE  # 导出表结构，可选值包括VIEW、GRANT、SEQUENCE等
+SCHEMA APPS # 要导出的Oracle schema
+高级选项
+EXPORT_SCHEMA 1          # 导出Oracle schema到PostgreSQL
+PG_SCHEMA public         # PostgreSQL目标schema
+DATA_LIMIT 10000         # 内存中存储的元组数
+📝 执行数据库迁移的完整流程
+1. 生成迁移项目模板
+Ora2Pg提供了创建项目模板的功能，自动生成目录结构和脚本：
+
+ora2pg --project_base /app/migration/ --init_project oracle_to_pg
+这将创建以下目录结构：
+
+/app/migration/oracle_to_pg/
+        schema/          # PostgreSQL模式文件
+        sources/         # Oracle源代码
+        data/            # 数据导出文件
+        config/          # 配置文件
+        reports/         # 迁移报告
+2. 修改配置文件
+编辑配置文件config/ora2pg.conf，设置Oracle数据库连接信息和迁移选项。
+
+3. 执行模式导出
+cd /app/migration/oracle_to_pg
+./export_schema.sh
+4. 检查生成的SQL文件
+导出完成后，检查schema目录下生成的SQL文件，特别是存储过程和触发器，可能需要手动调整。
+
+5. 导入到PostgreSQL
+./import_all.sh
+💡 迁移过程中的实用技巧
+处理PL/SQL到PL/pgSQL的转换
+虽然Ora2Pg提供自动转换功能，但复杂的PL/SQL代码可能需要手动调整。建议：
+
+使用--plsql选项启用PL/SQL转换
+重点检查游标、存储过程和触发器
+利用Ora2Pg提供的迁移成本评估功能预估工作量
+优化数据迁移性能
+使用--jobs参数启用并行数据导入
+对于大型表，考虑使用COPY模式而非INSERT模式
+调整DATA_LIMIT参数优化内存使用
+验证迁移结果
+Ora2Pg提供多种验证方法：
+
+# 比较表行数
+ora2pg -t TEST_COUNT -c config/ora2pg.conf
+
+# 比较视图行数
+ora2pg -t TEST_VIEW -c config/ora2pg.conf
+
+# 详细数据验证
+ora2pg -t TEST_DATA -c config/ora2pg.conf
+📊 迁移成本评估
+Ora2Pg提供了强大的迁移成本评估功能，帮助您规划迁移工作：
+
+ora2pg --estimate_cost --dump_as_html -t SHOW_REPORT -c config/ora2pg.conf
+这将生成HTML格式的详细报告，包括：
+
+数据库对象统计
+迁移难度评估
+预计工作量（人天）
+PL/SQL代码复杂度分析
+🚦 常见问题与解决方案
+连接Oracle数据库失败
+问题：ORA-12154: TNS:could not resolve the connect identifier specified
+
+解决方案：
+
+检查ORACLE_DSN配置是否正确
+确保tnsnames.ora文件配置正确
+验证Oracle Instant Client是否正确安装
+数据类型转换问题
+问题：某些Oracle数据类型无法正确转换为PostgreSQL类型
+
+解决方案：
+
+在配置文件中使用TYPE_CONVERSION指令自定义类型映射
+例如：TYPE_CONVERSION NUMBER(22) bigint
+存储过程转换错误
+问题：复杂的PL/SQL存储过程转换后无法在PostgreSQL中执行
+
+解决方案：
+
+使用--debug选项查看详细转换日志
+参考官方文档中的PL/SQL转换指南
+利用社区资源寻找类似转换案例
+📚 进一步学习资源
+官方文档：doc/Ora2Pg.pod
+配置示例：packaging/目录下包含各种平台的打包配置
+Perl模块：lib/Ora2Pg.pm和lib/Ora2Pg/目录下的模块源代码
+通过本指南，您应该能够顺利使用Ora2Pg完成Oracle到PostgreSQL的数据库迁移。Ora2Pg的强大功能和灵活性使其成为数据库迁移的理想选择，无论是小型项目还是大型企业级迁移。开始您的迁移之旅吧！
+
+
+
+
+
+直接回答用法。
+import_all.sh 必须在 ora2pg 的项目目录（有 config/、schema/、data/ 子目录）下运行。
+必选参数是两个：
+./import_all.sh -d 数据库名 -o 数据库属主
+常用参数：
+参数	说明
+-d dbname	目标 PostgreSQL 数据库名（必填）
+-o owner	数据库属主用户名（必填）
+-h host	PostgreSQL 主机地址，默认 unix socket
+-p port	PostgreSQL 端口，默认 5432
+-U user	连接 PostgreSQL 的用户名
+-n schema	要创建的 schema 列表，逗号分隔
+-s	只导入 schema，不导入数据
+-a	只导入数据，不导入 schema
+-y	自动回答 yes，跳过所有确认提示
+
+如果你的表在 public 以外的 schema 里，加上 -n：
+./import_all.sh -d mydb -o myuser -n my_schema -y
+-y 通常建议加上，否则每一步都要手动确认。
+
+
+脚本本身有两个方式：
+1. 用 -l 参数指定日志文件
+./import_all.sh -d mydb -o myuser -y -l /tmp/import.log
+所有 stdout 和 stderr 都会写入这个文件，查看错误：
+grep -i error /tmp/import.log
+2. 或者自己重定向输出
+./import_all.sh -d mydb -o myuser -y 2>&1 | tee import_all.log
+脚本遇到错误会立即停（die() 函数），并打印 ERROR: 开头的信息到 stderr。搜索关键词 ERROR 或 FATAL 就能定位到失败点。
+如果只看最后的错误：
+tail -50 import_all.log | grep -i -E 'error|fatal|failure'
+另外，脚本执行每个 psql 后都会检查返回值，非零就停。所以如果你看到脚本中途退出，最后一个 psql -f 执行的文件就是出错的地方。
