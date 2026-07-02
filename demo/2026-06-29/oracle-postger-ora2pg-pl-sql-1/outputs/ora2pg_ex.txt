@@ -187,3 +187,50 @@ grep -i error /tmp/import.log
 如果只看最后的错误：
 tail -50 import_all.log | grep -i -E 'error|fatal|failure'
 另外，脚本执行每个 psql 后都会检查返回值，非零就停。所以如果你看到脚本中途退出，最后一个 psql -f 执行的文件就是出错的地方。
+
+
+
+
+用法
+import_all.sh 是 Ora2Pg 生成的导入工具，负责把导出好的 SQL 文件（schema + data）导入 PostgreSQL。基本用法：
+./import_all.sh -d dbname -o owner [-n schema] [-U pguser] [-h host] [-p port] [-y]
+常用选项：
+选项	作用
+-d	目标数据库名 （必填）
+-o	数据库所有者用户名 （必填）
+-U	连接 PostgreSQL 用的用户名（默认 peer 认证）
+-h -p	主机和端口（默认 Unix socket + 5432）
+-n	要创建的 schema 列表，逗号分隔
+-s	只导入 schema，不导入数据
+-a	只导入数据，不导入 schema
+-y	自动应答 Yes，跳过所有交互确认
+-f	跳过用户/数据库存在性检查，不自动创建
+-x	索引和约束在数据导入之后再加
+-i	只导入索引、约束和触发器
+-j N	并行连接数，加速导入
+-P N	同时处理的表数
+
+是否会自动创建 PostgreSQL 中的 user / schema / table？
+会，前提是没有加 -f（-f 会跳过自动创建）。
+User（数据库所有者）
+脚本查 pg_user，如果 $DB_OWNER 不存在，会提示并执行：
+createuser --no-superuser --no-createrole --no-createdb $DB_OWNER
+Database
+脚本查 pg_database，如果 $DB_NAME 不存在，会提示并执行：
+createdb --owner $DB_OWNER -E UTF8 $DB_NAME
+如果库已存在，还会问你要不要 drop 重建。
+Schema
+通过 -n schema1,schema2 传入，脚本会逐条执行：
+CREATE SCHEMA $lnspace;
+创建完后还会把 schema 加到 owner 的 search_path 上。
+Table
+Ora2Pg 导出时会生成 schema/tables/table.sql，里面包含了 CREATE TABLE 等 DDL。脚本直接拿 psql -f 执行这个文件，所以表不是脚本凭空捏的，是 Ora2Pg 从 Oracle 结构转换出来的 DDL 自动创建的。
+同理，View、Sequence、Trigger、Function、Procedure 等都是读取对应 SQL 文件后 psql -f 执行进去的。
+总结：这个脚本是一站式导入工具 —— 从创建用户、建库、建 schema，到执行 DDL 建表、导数据、加索引约束，按提示一步步走完。加 -y 可以跳过所有交互确认，适合自动化场景。
+
+./import_all.sh -d target_db -o postgres -n ora2pg_test -U postgres -h 172.18.0.2 -p 5432 -y
+
+-d 数据库名
+-o 用户名
+上面两个需要自己创建
+
