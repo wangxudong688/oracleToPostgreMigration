@@ -228,7 +228,7 @@ Ora2Pg 导出时会生成 schema/tables/table.sql，里面包含了 CREATE TABLE
 同理，View、Sequence、Trigger、Function、Procedure 等都是读取对应 SQL 文件后 psql -f 执行进去的。
 总结：这个脚本是一站式导入工具 —— 从创建用户、建库、建 schema，到执行 DDL 建表、导数据、加索引约束，按提示一步步走完。加 -y 可以跳过所有交互确认，适合自动化场景。
 
-./import_all.sh -d target_db -o postgres -n ora2pg_test -U postgres -h 172.18.0.2 -p 5432 -y
+./import_all.sh -d target_db -o postgres -n ora2pg_test -U postgres -h 172.18.0.2 -p 5432 -y -l /work/oracle_to_pg/import.log
 
 -d 数据库名
 -o 用户名
@@ -340,3 +340,202 @@ echo "已移除 CURSOR ... RETURN %ROWTYPE; 行"
 2.  **后期处理**：等 Postgre SQL 建好表和导入完数据后，再单独检查那个包里的逻辑（业务代码），手动重写为 PG Function。
 
 您现在可以先尝试用 `sed` 命令去掉报错行后再运行脚本吗？如果还有问题请贴出下一行的错误信息。
+
+以下是错误总结：
+类型	错误	原因
+Schema / 包 (package)	CURSOR c_high_earners RETURN emp%ROWTYPE; 语法错误	ora2pg 将 Oracle PL/SQL 包中的游标声明转换为 PostgreSQL 不支持的语法，PostgreSQL 不允许 CURSOR ... RETURN 这种写法
+Schema / 视图 (view)	引用 sys.all_scheduler_program_args 表不存在	ora2pg 保留了 Oracle 系统表引用，PostgreSQL 中不存在 sys 模式下的该表（来自 Oracle Scheduler 视图的自动转换）
+Schema / 函数 (function)	类型 sys_refcursor 不存在	ora2pg 未将 Oracle 的 sys_refcursor 类型转换为 PostgreSQL 的 refcursor 类型
+Schema / 存储过程 (procedure)	TYPE num_tab IS TABLE OF emp.empno%TYPE; 语法错误	Oracle PL/SQL 的嵌套表类型定义语法 PostgreSQL 不支持，需使用 CREATE TYPE 方式定义
+Schema / 索引 (index)	列 "sal desc" 不存在	ora2pg 将 DESC 关键字包裹进了双引号内，变成列名 "sal desc"（含空格 + desc），而 emp 表只有 sal 列
+数据迁移 (COPY)	Can't locate DBD::Pg.pm，perl 模块缺失	宿主机缺少 Perl 的 DBD::Pg 模块，ora2pg 无法连接到 PostgreSQL 进行数据 COPY
+
+核心问题：ora2pg 的 PL/SQL 转换质量不够完善，对 Oracle 特有的游标声明、嵌套表类型、sys_refcursor 等语法没有正确映射到 PostgreSQL 的等效写法；此外宿主机环境缺少 DBD::Pg 模块导致数据迁移环节直接失败。需要手动修正生成的 SQL 或配置 ora2pg 的转换规则来绕过这些问题。
+
+20:03
+
+
+
+
+
+
+把成功的也总结
+EXPORT_TYPE="TYPE TABLE PACKAGE VIEW GRANT SEQUENCE TRIGGER FUNCTION PROCEDURE TABLESPACE PARTITION MVIEW DBLINK SYNONYM DIRECTORY"
+和这个type比较哪些没处理请告诉我
+
+
+
+
+20:05
+
+
+
+
+
+
+已处理 5s
+
+
+
+
+
+
+
+从日志来看，实际执行过的步骤涉及以下类型：
+类型	状态	说明
+TABLE	✅ 成功	8 张表、约束、外键均导入成功
+SEQUENCE	✅ 成功	3 个序列创建成功
+TRIGGER	✅ 成功	4 个触发器及对应的函数创建成功
+MVIEW	✅ 成功	物化视图 SQL 执行通过（SELECT 0）
+PACKAGE	❌ 失败	CURSOR ... RETURN 语法错误
+VIEW	❌ 失败	引用 sys.all_scheduler_program_args 不存在
+FUNCTION	❌ 失败	sys_refcursor 类型不存在
+PROCEDURE	❌ 失败	嵌套表 TYPE ... IS TABLE OF 语法不支持
+INDEX	❌ 失败	"sal desc" 双引号包裹问题
+COPY (数据)	❌ 失败	缺少 DBD::Pg Perl 模块
+
+对照 EXPORT_TYPE 中列出的全部 16 种类型，以下类型在日志中完全没有出现处理的痕迹，即 ora2pg 本次未导出/未处理它们：
+未处理的类型	可能原因
+TYPE	未生成导出的 SQL 文件（或文件中无有效内容且被跳过）
+GRANT	未导出权限语句
+TABLESPACE	未导出表空间定义
+PARTITION	未导出分区定义
+DBLINK	未导出数据库链接
+SYNONYM	未导出同义词
+DIRECTORY	未导出目录对象
+
+简单说：16 种类型中只实际处理了 9 种（TABLE、SEQUENCE、TRIGGER、MVIEW、PACKAGE、VIEW、FUNCTION、PROCEDURE、INDEX/COPY 的数据拷贝也算），其中有 6 种失败，只有 4 种（TABLE、SEQUENCE、TRIGGER、MVIEW）完全成功。剩下的 7 种（TYPE、GRANT、TABLESPACE、PARTITION、DBLINK、SYNONYM、DIRECTORY）ora2pg 配置里虽声明了，但本次迁移中根本没走到对应的导入步骤。
+
+
+
+查看生成了哪些表
+#!/bin/bash
+
+target_dir="${1:-.}"
+
+for item in "$target_dir"/*; do
+    if [ -d "$item" ]; then
+        folder_name="$(basename "$item")"
+        file_count=$(ls -1 "$item" 2>/dev/null | wc -l)
+
+        if [ "$file_count" -eq 0 ]; then
+                echo "$folder_name nothing"
+                continue
+        fi
+        for file in "$item"/*; do
+            if [ -f "$file" ]; then
+                echo "$folder_name $(basename "$file")"
+            fi
+        done
+    fi
+done
+
+
+
+以下是对每一类未处理或出错的类型，从 Oracle 迁移到 PostgreSQL 时需要关注的核心语法差异总结。
+一、已处理但失败的 5 种类型
+1. PACKAGE / PACKAGE BODY
+Oracle	PostgreSQL 注意事项
+CREATE PACKAGE pkg AS ... END;	PostgreSQL 没有包(package)概念，需将包拆分为独立的函数/过程，或放在同一 schema 下用命名前缀模拟
+包内游标 CURSOR c RETURN table%ROWTYPE	PostgreSQL 不支持 CURSOR ... RETURN，需改为 CURSOR FOR SELECT * FROM table 或用 REFCURSOR 返回
+包全局变量 / 常量	需改为 GUC 自定义参数、临时表或函数内的默认参数
+包初始化块	无等价物，需显式调用初始化函数
+
+2. VIEW（涉及 Oracle 系统表/同义词的视图）
+Oracle	PostgreSQL 注意事项
+引用 sys.all_*, dba_*, user_* 内置视图	PostgreSQL 有 pg_catalog / information_schema 体系，没有直接对应，需 改写查询来源
+SELECT ... FROM sys.all_scheduler_program_args	无对应系统表，需手动在 PostgreSQL 中创建等效视图或彻底移除该引用
+视图中使用 Oracle 特有函数（DECODE, NVL, SYSDATE, CONNECT BY 等）	需替换为 PostgreSQL 实现（CASE, COALESCE, NOW(), WITH RECURSIVE）
+
+3. FUNCTION（PL/SQL 语法差异）
+Oracle	PostgreSQL 注意事项
+sys_refcursor 返回类型	改为 refcursor（PostgreSQL 的游标类型）
+RETURN 子句中声明游标结构	PostgreSQL 函数返回 refcursor 时需要 $body$ 内 OPEN cursor FOR SELECT ... 并返回该游标
+%TYPE 和 %ROWTYPE 属性	仅有限支持，%TYPE 可用但需注意; %ROWTYPE 在 PL/pgSQL 中支持，但位置有限制
+IS 替代 AS 后跟函数体	PostgreSQL 需使用 LANGUAGE plpgsql 且函数体用 $$ ... $$ 或 $body$ 包裹
+内置函数差异：SYSDATE→NOW(), NVL→COALESCE, DECODE→CASE...	大量内建函数需要逐行替换
+
+4. PROCEDURE
+Oracle	PostgreSQL 注意事项
+TYPE t_name IS TABLE OF table%TYPE	PostgreSQL 不支持在过程内部定义嵌套表类型，需改为 CREATE TYPE 在 schema 级别创建，或用 ARRAY + 临时表模拟
+TYPE t_name IS RECORD (...)	同上，需在 schema 级别 CREATE TYPE。若只在该过程内使用，也可以用 RECORD 类型 + 匿名块
+IS / AS 声明后直接写声明节	PostgreSQL 用 DECLARE 开始声明节
+FORALL / BULK COLLECT INTO	PostgreSQL 不直接支持，需改为 FOREACH ... ARRAY 或 UNNEST + 批量 INSERT/UPDATE
+EXCEPTION WHEN OTHERS THEN ...	PostgreSQL 异常处理语法类似但细节不同（WHEN OTHERS THEN 支持，但不能 SQLCODE 等方式使用）
+COMMIT / ROLLBACK 在过程中	PostgreSQL 不允许存储过程内部随意提交/回滚事务（除非在事务块顶层）
+Oracle OUT 参数多种绑定	基本兼容但要注意模式: OUT / IN OUT 支持，默认参数只在末位使用
+
+5. INDEX（ora2pg 转换 B-tree / 函数索引的问题）
+Oracle	PostgreSQL 注意事项
+CREATE INDEX idx ON table (expression DESC)	注意 DESC 不需要也不应该用双引号包裹；正确的写法是 (sal DESC)
+函数索引 (UPPER(name))	兼容，但注意 PostgreSQL 函数索引需要在创建时就确定 IMMUTABLE
+位图索引 BITMAP	PostgreSQL 不支持位图索引，需改为 B-tree 或自行评估更优策略
+反向键索引 REVERSE	不支持，需考虑其他等价方案
+基于分区的本地/全局索引	PostgreSQL 分区索引语法不同（CREATE INDEX ON ONLY parent 等）
+
+二、未处理的 7 种类型——迁移注意事项
+6. TYPE（自定义类型）
+Oracle	PostgreSQL 注意事项
+CREATE OR REPLACE TYPE t_name AS OBJECT (...)	PostgreSQL 用 CREATE TYPE t_name AS (...)，但**无方法(member function)**支持（需拆为函数+类型）
+CREATE TYPE t_name AS TABLE OF ...	无直接等价，改为 CREATE TYPE ... AS (...) + ARRAY，或用临时表
+CREATE TYPE t_name AS VARRAY(...)	PostgreSQL 可用 CREATE TYPE + ARRAY[n]，但不严格限制长度
+类型继承 / 超类型	PostgreSQL CREATE TYPE 不支持对象继承
+
+7. GRANT（权限）
+Oracle	PostgreSQL 注意事项
+GRANT EXECUTE ON pkg TO user	允许（针对函数/过程），但需逐对象授权，无法像包一样整组授予
+GRANT CONNECT, RESOURCE, DBA TO user	PostgreSQL 使用 Role + INHERIT / GRANT 权限，无等价角色层级
+GRANT SELECT ON schema.table TO role	基本兼容，但 PostgreSQL 默认未授予 PUBLIC 对 schema 的 USAGE 权限
+同义词对象、目录的权限	PostgreSQL 不支持 DIRECTORY 和 SYNONYM，对应权限概念也不同
+
+8. TABLESPACE
+Oracle	PostgreSQL 注意事项
+CREATE TABLESPACE ts DATAFILE '...' SIZE 100M	语法完全不同：CREATE TABLESPACE ts LOCATION '/path'（使用文件系统目录而非数据文件）
+自动扩展 AUTOEXTEND ON	不支持，需操作系统层管理空间
+BIGFILE / SMALLFILE	不支持，PostgreSQL 表空间只是目录
+CREATE TABLE t TABLESPACE ts	语法兼容，但 PostgreSQL 表空间主要用于 I/O 隔离而非存储管理
+
+9. PARTITION
+Oracle	PostgreSQL 注意事项
+声明式分区语法不同：Oracle PARTITION BY RANGE (col) (PARTITION p1 VALUES LESS THAN (100))	PostgreSQL 语法类似但略有差异，需要 PARTITION BY RANGE (col) + CREATE TABLE p1 PARTITION OF t FOR VALUES FROM (...) TO (...)
+列表分区 VALUES (...)	兼容，但写法定型略有不同
+哈希分区 PARTITION BY HASH	PostgreSQL 11+ 支持，语法不同
+间隔分区 PARTITION BY RANGE ... INTERVAL	PostgreSQL 不支持间隔分区，需使用 pg_partman 扩展
+子分区	不支持自动子分区，需手动分层创建
+分区修剪与全局索引	行为差异较大，需仔细测试
+
+10. DBLINK
+Oracle	PostgreSQL 注意事项
+CREATE DATABASE LINK dblink CONNECT TO ...	PostgreSQL 使用 postgres_fdw 或 dblink 扩展实现。语法完全不同：先 CREATE SERVER → CREATE USER MAPPING → CREATE FOREIGN TABLE / IMPORT FOREIGN SCHEMA
+SELECT * FROM table@dblink	需改为 SELECT * FROM foreign_table（FDW 方式）或 SELECT * FROM dblink('...') AS (...)
+远程 DML INSERT INTO table@dblink	PostgreSQL 需要 FDW 支持写操作（postgres_fdw 默认支持）
+同义词引用远程对象	需改造为 FDW 的 foreign table
+
+11. SYNONYM
+Oracle	PostgreSQL 注意事项
+CREATE SYNONYM s FOR schema.table	PostgreSQL 没有同义词，替代方案：使用 VIEW 模拟（只读场景），或设置 search_path 让名称解析按顺序查找 schema
+公共同义词 PUBLIC SYNONYM	无等价概念，可将对象放在 public schema 中，或使用 search_path
+同义词指向远程对象	需改为 FDW 的 foreign table
+
+12. DIRECTORY
+Oracle	PostgreSQL 注意事项
+CREATE DIRECTORY dir AS '/path'	PostgreSQL 没有 DIRECTORY 对象，函数如 COPY, pg_read_file() 直接使用操作系统路径，权限由 pg_read_server_files 等角色属性控制
+在 PL/SQL 中用 BFILENAME('DIR', 'file')	无等价，需改为 pg_read_binary_file() + 应用层处理
+外部表 ORACLE_LOADER / ORACLE_DATAPUMP	改为 file_fdw 或 COPY 命令
+
+最后一张速查表供快速参考：
+类型	失败/未处理	迁移工作量预估	核心改造手段
+PACKAGE	❌ 失败	高	拆为独立函数 + 改用 search_path 组织
+VIEW	❌ 失败	中	改写 Oracle 系统表引用 + 替换内置函数
+FUNCTION	❌ 失败	中	替换 sys_refcursor→refcursor，处理 PL/SQL 语法差异
+PROCEDURE	❌ 失败	高	去除嵌套类型定义、FORALL、ALTER 包内 COMMIT 逻辑
+INDEX	❌ 失败	低	修复双引号问题，检查位图/反向键/分区索引
+TYPE	⏭️ 未导出	中	CREATE OR REPLACE TYPE → CREATE TYPE，移除成员函数
+GRANT	⏭️ 未导出	低	角色和权限体系需重新设计
+TABLESPACE	⏭️ 未导出	低	修改建表语法，去除 AUTOEXTEND / BIGFILE
+PARTITION	⏭️ 未导出	中	间隔分区 → pg_partman，重写子分区
+DBLINK	⏭️ 未导出	中	重写为 postgres_fdw 模式
+SYNONYM	⏭️ 未导出	低	改 VIEW / 调 search_path
+DIRECTORY	⏭️ 未导出	低	去除 DIRECTORY 对象，改用操作系统路径
+
+

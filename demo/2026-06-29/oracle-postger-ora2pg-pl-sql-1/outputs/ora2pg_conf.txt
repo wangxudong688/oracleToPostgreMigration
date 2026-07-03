@@ -1,0 +1,289 @@
+以下是 /Users/wangxudong/project/docs/ora2pg/config/ora2pg.conf 完整配置项的逐段中文说明。
+INPUT SECTION — 输入配置（Oracle 连接）
+配置项	当前值	说明
+ORACLE_HOME	/usr/lib/oracle/12.2/client64	Oracle 客户端安装目录
+ORACLE_DSN	dbi:Oracle:host=mydb.mydom.fr;sid=SIDNAME;port=1521	Oracle 数据库连接串（数据源）
+ORACLE_USER	system	Oracle 连接用户名
+ORACLE_PWD	manager	Oracle 连接密码
+USER_GRANTS	1	以普通用户连接（非 DBA），使用 ALL_* 视图而不是 DBA_*；导出 GRANT 时需要 DBA 权限
+DEBUG	0	是否输出调试日志到 stderr
+ORA_INITIAL_COMMAND	（注释）	连接 Oracle 后发送的初始 SQL 命令，可多次设置
+
+SCHEMA SECTION — Schema 配置
+配置项	当前值	说明
+EXPORT_SCHEMA	0	是否将 Oracle 的 Schema 导出为 PostgreSQL 的 Schema
+SCHEMA	CHANGE_THIS_SCHEMA_NAME	要导出的 Oracle Schema / 用户名（需改成实际值）
+CREATE_SCHEMA	1	是否在输出文件开头生成 CREATE SCHEMA 语句
+COMPILE_SCHEMA	0	导出前是否强制 Oracle 重新编译失效的对象（函数/过程/包/类型）
+PG_SCHEMA	（注释）	强制指定 PostgreSQL 目标 schema；若为空则自动使用 Oracle schema 名
+POSTGIS_SCHEMA	（注释）	添加空间函数搜索路径的 schema
+SYSUSERS	（默认列表）	要排除的系统用户列表（默认已排除 SYS/SYSTEM/OUTLN 等）
+LOOK_FORWARD_FUNCTION	（注释）	跨 schema 的函数/包声明预检，用于正确处理 OUT 参数重写
+
+ENCODING SECTION — 编码配置
+配置项	当前值	说明
+NLS_LANG	AMERICAN_AMERICA.AL32UTF8（默认）	Oracle 客户端语言和编码设置
+NLS_NCHAR	AL32UTF8（默认）	Oracle NCHAR 字符集
+CLIENT_ENCODING	UTF8（默认）	PostgreSQL 客户端编码
+
+EXPORT SECTION — 导出类型与过滤器
+配置项	当前值	说明
+TYPE	TABLE	导出类型（支持 TABLE/PACKAGE/VIEW/GRANT/SEQUENCE/TRIGGER/FUNCTION/PROCEDURE/TABLESPACE/TYPE/PARTITION/FDW/MVIEW/QUERY/KETTLE 等）
+DISABLE_COMMENT	0	是否不导出表和字段的注释
+ALLOW	（注释）	只导出指定对象名（支持正则和 LIKE）
+EXCLUDE	（注释）	排除指定对象名
+VIEW_AS_TABLE	（注释）	指定哪些视图当作普通表导出（生成 CREATE TABLE）
+GRANT_OBJECT	（注释）	只导出某类对象的权限（TABLE/VIEW/SEQUENCE 等），设为 USER 则只导出用户定义
+EXTERNAL_TO_FDW	1	是否将外部表导出为 file_fdw 外表
+TRUNCATE_TABLE	1	数据导入前是否对表执行 TRUNCATE
+DELETE	（注释）	数据导入前的 DELETE 过滤条件，支持表级个性化
+USE_TABLESPACE	0	是否保持 Oracle 中的表空间名称
+REORDERING_COLUMNS	0	是否重排列序以优化磁盘占用
+WHERE	（注释）	数据导出的 WHERE 过滤条件
+REPLACE_QUERY	（注释）	自定义数据提取查询，覆盖默认的 SELECT * FROM table
+
+FULL TEXT SEARCH SECTION — 全文检索
+配置项	当前值	说明
+CONTEXT_AS_TRGM	0	是否将 Oracle CONTEXT 索引转为 pg_trgm 索引
+FTS_INDEX_ONLY	1	是否仅创建函数索引（tsvector），否则额外创建 tsvector 列+触发器
+FTS_CONFIG	（注释）	强制指定全文搜索配置词典（如 pg_catalog.french）
+USE_UNACCENT	0	是否启用无重音搜索辅助函数
+USE_LOWER_UNACCENT	0	是否在无重音函数中还调用 lower()
+
+DATA DIFF SECTION — 增量数据同步
+配置项	当前值	说明
+DATADIFF	0	是否启用差异同步（仅 INSERT 变化的行）
+DATADIFF_UPDATE_BY_PKEY	0	是否通过主键匹配执行 UPDATE 替代 DELETE+INSERT
+DATADIFF_DEL_SUFFIX	_del	临时表后缀（待删除行）
+DATADIFF_UPD_SUFFIX	_upd	临时表后缀（待更新行）
+DATADIFF_INS_SUFFIX	_ins	临时表后缀（待插入行）
+DATADIFF_WORK_MEM	256 MB	差异同步的 work_mem
+DATADIFF_TEMP_BUFFERS	512 MB	差异同步的 temp_buffers
+
+CONSTRAINT SECTION — 约束控制
+配置项	当前值	说明
+SKIP	（注释）	跳过某些约束类型（fkeys/pkeys/ukeys/indexes/checks）
+KEEP_PKEY_NAMES	0	是否保留 Oracle 主键名称
+PKEY_IN_CREATE	0	是否将主键定义内联在 CREATE TABLE 中（否则用 ALTER TABLE 添加）
+ON_UPDATE_CASCADE	（注释）	控制外键 ON UPDATE CASCADE 的行为：never（从不），always（总是），或同 ON DELETE CASCADE
+
+OUTPUT SECTION — 输出控制
+配置项	当前值	说明
+OUTPUT_DIR	（注释）	输出目录
+OUTPUT	（注释）	输出文件名，默认 output.sql
+FILE_PER_INDEX	1	是否为每个索引生成独立文件
+FILE_PER_FKEYS	1	是否将外键声明保存到独立文件
+FILE_PER_TABLE	1	导出数据时是否每个表一个文件
+FILE_PER_FUNCTION	1	函数/过程/触发器/包导出时是否每个一个文件
+BINMODE	（注释）	Perl I/O 编码设置（默认 utf8）
+STOP_ON_ERROR	1	SQL 脚本中是否包含 \set ON_ERROR_STOP ON
+COPY_FREEZE	0	是否使用 COPY FREEZE 冻结数据行（初始加载优化）
+CREATE_OR_REPLACE	1	DDL 是否使用 CREATE OR REPLACE
+PG_INITIAL_COMMAND	（注释）	连接 PostgreSQL 后发送的初始 SQL 命令
+
+TYPE SECTION — 数据类型配置
+配置项	当前值	说明
+DATA_TYPE	（默认映射表）	自定义 Oracle → PostgreSQL 数据类型映射。格式 OraType:PGType，逗号分隔
+PG_NUMERIC_TYPE	1	是否将 Oracle NUMBER(p,s) 转为 PostgreSQL 的 real/float（设为 0 则保留 numeric(p,s)）
+PG_INTEGER_TYPE	1	是否将 NUMBER(p) 转为 smallint/integer/bigint（根据精度自动匹配）
+DEFAULT_NUMERIC	bigint	无精度的 NUMBER() 默认转为 bigint
+ENABLE_MICROSECOND	1	是否导出 Oracle 时间戳的毫秒部分
+REPLACE_AS_BOOLEAN	（注释）	指定哪些表/列转为 PostgreSQL boolean，支持按类型自动转（如 NUMBER:1）
+BOOLEAN_VALUES	yes:no y:n 1:0 true:false enabled:disabled（默认）	布尔值的可选枚举
+REPLACE_ZERO_DATE	（注释）	遇到 0000-00-00 零日期时替换为指定值（否则转为 NULL）
+MODIFY_TYPE	（注释）	强制修改目标类型。格式 表:列:类型
+TO_NUMBER_CONVERSION	numeric	Oracle TO_NUMBER() 转换方式（numeric/integer/bigint/自定义格式掩码/none）
+
+GRANT SECTION — 权限导出
+配置项	当前值	说明
+GEN_USER_PWD	0	导出用户时是否生成默认密码
+FORCE_OWNER	0	是否强制设置对象所有者为 Oracle 中的用户名（设为 1）或指定用户名
+
+DATA SECTION — 数据导出行为
+配置项	当前值	说明
+DATA_LIMIT	10000	每次批量提取的行数
+BLOB_LIMIT	500（默认）	遇到 BLOB 时的数据量上限，防止 OOM
+NOESCAPE	0	是否禁用 COPY 导出中的转义
+TRANSACTION	serializable	数据导出事务隔离级别（可选 readonly/readwrite/serializable/committed）
+STANDARD_CONFORMING_STRINGS	1	INSERT 语句是否使用标准字符串（反斜杠按字面处理，不含反斜杠则用 E'...'）
+LONGREADLEN	1047552（约 1MB）	DBD::Oracle 的 LongReadLen，LOB 读取缓冲区大小
+LONGTRUNCOK	0（注释）	超长 LOB 是否截断处理
+NO_LOB_LOCATOR	0	是否使用 LOB 定位器替代全量加载
+XML_PRETTY	0	XML 数据是否用 getStringVal() 替代 getClobVal()
+LOG_ON_ERROR	0	直接导入 PG 时遇到错误是否继续（错误行写入 表名_error.log）
+TRIM_TYPE	BOTH	CHAR(n) 转 varchar 时空白修剪方式（BOTH/LEADING/TRAILING）
+TRIM_CHAR	（注释）	修剪的字符（默认空格）
+INTERNAL_DATE_MAX	49	内部时间戳（如 01-JAN-77）的世纪自动判定界限，<=49 补 2000，>49 补 1900
+FUNCTION_CHECK	1	是否启用 SET check_function_bodies = false
+
+PERFORMANCE SECTION — 性能与并行
+配置项	当前值	说明
+JOBS	1	并行处理进程数（COPY/函数/过程导出时使用，不适用于 Windows）
+ORACLE_COPIES	1	Oracle 侧并行连接数（用于数据提取，需配合 DEFINED_PK）
+PARALLEL_TABLES	1	并行导出表的数量，>1 时自动启用 FILE_PER_TABLE
+DEFINED_PK	（注释）	并行分片使用的数值列，格式 表:列
+DROP_INDEXES	0	是否在导入数据前 drop 所有索引，导入后重建（优化初始加载速度）
+SYNCHRONOUS_COMMIT	0	是否关闭同步提交（off 可加速写入）
+
+PLSQL SECTION — PL/SQL → PL/pgSQL 转换
+配置项	当前值	说明
+EXPORT_INVALID	0	是否导出 Oracle 中标记为 INVALID 的 PL/SQL 对象
+PLSQL_PGSQL	0	是否启用 PL/SQL → PL/pgSQL 转换（该功能仍在完善中）
+NULL_EQUAL_EMPTY	0	空字符串是否视为 NULL（模拟 Oracle 行为），开启后 IS NULL 转 coalesce(...)
+EMPTY_LOB_NULL	0	empty_clob() / empty_blob() 导出为 NULL
+PACKAGE_AS_SCHEMA	1	是否将 Oracle 包模拟为 PostgreSQL schema（设为 0 则改为 包名_函数名 的扁平命名）
+REWRITE_OUTER_JOIN	1	是否重写 Oracle 的 (+) 外连接语法
+FUNCTION_STABLE	1	是否将转换后的函数标记为 STABLE（不允许修改数据）
+COMMENT_COMMIT_ROLLBACK	0	是否注释掉函数中的 COMMIT/ROLLBACK 调用
+STRING_CONSTANT_REGEXP	（注释）	字符串占位符正则列表，防止解析器破坏
+USE_ORAFCE	0	是否使用 Orafce 库的函数替代翻译（可以不加转换）
+
+ASSESSMENT SECTION — 迁移评估
+配置项	当前值	说明
+ESTIMATE_COST	0	是否启用迁移成本评估，需与 SHOW_REPORT/FUNCTION/PROCEDURE/PACKAGE/QUERY 类型配合
+COST_UNIT_VALUE	5	每单位评估值对应的人分钟数
+DUMP_AS_HTML	0	是否输出 HTML 格式的评估报告
+TOP_MAX	10	前 N 大表的展示数量
+HUMAN_DAYS_LIMIT	5	评估等级从 B 切换到 C 的人天阈值
+AUDIT_USER	（注释）	审计用户过滤（从 DBA_AUDIT_TRAIL 提取查询）
+UUID_FUNCTION	uuid_generate_v4（默认）	Oracle SYS_GUID() 转换后的 PostgreSQL UUID 生成函数
+
+POSTGRESQL FEATURE SECTION — PG 特性开关
+配置项	当前值	说明
+PG_SUPPORTS_WHEN	1	是否支持触发器 WHEN 子句（PG>=9.0）
+PG_SUPPORTS_INSTEADOF	1	是否支持 INSTEAD OF 触发器（PG>=9.1）
+PG_SUPPORTS_MVIEW	1	是否支持原生物化视图（PG>=9.3）
+PG_SUPPORTS_CHECKOPTION	1	视图是否带 CHECK OPTION（PG>=9.4）
+PG_SUPPORTS_IFEXISTS	1	DDL 是否使用 IF EXISTS（PG>=9.x）
+PG_SUPPORTS_LATERAL	1	是否支持 LATERAL 关键字（PG>=9.3）
+PG_SUPPORTS_PARTITION	0	⚠️ 当前为 0，禁用了声明式分区导出（PG>=10），需改为 1 才能导出分区表
+BITMAP_AS_GIN	1	Oracle 位图索引是否转为 GIN 索引（需 btree_gin 扩展）
+PG_BACKGROUND	0	自治事务是否使用 pg_background 扩展替代 dblink
+DBLINK_CONN	（注释）	自定义 dblink 连接串
+PG_SUPPORTS_SUBSTR	1	substr() 是否可转为 substring()
+PG_SUPPORTS_NAMED_OPERATOR	1	PL/SQL 命名参数 => 是否转 PostgreSQL 的 :=
+
+SPATIAL SECTION — 空间数据
+配置项	当前值	说明
+AUTODETECT_SPATIAL_TYPE	1	是否自动检测空间列的真实类型（扫描 50000 条样本）
+CONVERT_SRID	1	是否自动将 Oracle SRID 转为 EPSG
+DEFAULT_SRID	4326	默认 EPSG SRID
+GEOMETRY_EXTRACT_TYPE	INTERNAL	几何数据提取方式：WKT（默认）/WKB/INTERNAL（纯 Perl 转换）
+
+FDW SECTION — 外部表
+配置项	当前值	说明
+FDW_SERVER	orcl	外部数据服务器名称（用于 FDW 导出类型）
+
+MYSQL SECTION — MySQL 相关
+配置项	当前值	说明
+MYSQL_PIPES_AS_CONCAT	0	|| 是否视为字符串连接符而非 OR
+MYSQL_INTERNAL_EXTRACT_FORMAT	0	EXTRACT() 替换是否返回内部整数格式
+
+从日志看当前配置的关键问题
+对照日志中的失败原因，当前配置中值得关注的点：
+PLSQL_PGSQL = 0 — PL/SQL → PL/pgSQL 转换被关闭了，所以所有包/函数/过程的原生语法差异都未被处理，导致 CURSOR ... RETURN、TYPE ... IS TABLE OF、sys_refcursor 等直接报错
+PG_SUPPORTS_PARTITION = 0 — 声明式分区被禁用，但本次迁移未走到分区导出步骤所以暂时没触发问题
+EXPORT_SCHEMA = 0 + SCHEMA = CHANGE_THIS_SCHEMA_NAME — 这两个值还未改成实际的 schema，说明这份配置是模板尚未根据真实环境调整
+如果你后续要修正这些错误，最直接的方式是把 PLSQL_PGSQL 设为 1 让转换引擎工作起来，然后根据生成的 SQL 手工修补转换不完整的部分。
+
+开关型配置项语义速查表
+配置项	当前值	含义
+USER_GRANTS	1	是 — 以普通用户连接，使用 ALL_* 视图
+EXPORT_SCHEMA	0	否 — 不将 Oracle Schema 导出为 PG Schema
+CREATE_SCHEMA	1	是 — 生成 CREATE SCHEMA 语句
+COMPILE_SCHEMA	0	否 — 导出前不预编译失效对象
+DEBUG	0	否 — 不输出调试日志
+DISABLE_COMMENT	0	否 — 未禁用注释，即导出表/字段注释
+EXTERNAL_TO_FDW	1	是 — 外部表转 FDW
+TRUNCATE_TABLE	1	是 — 数据导入前先 TRUNCATE 表
+USE_TABLESPACE	0	否 — 不保留 Oracle 表空间名
+REORDERING_COLUMNS	0	否 — 不重排列序
+CONTEXT_AS_TRGM	0	否 — 不将 CONTEXT 索引转 pg_trgm
+FTS_INDEX_ONLY	1	是 — 仅创建函数索引，不额外创建 tsvector 列+触发器
+USE_UNACCENT	0	否 — 不启用无重音搜索辅助
+USE_LOWER_UNACCENT	0	否 — 同上
+DATADIFF	0	否 — 不启用差异同步
+DATADIFF_UPDATE_BY_PKEY	0	否 — 不使用 UPDATE 而用 DELETE+INSERT
+KEEP_PKEY_NAMES	0	否 — 不保留 Oracle 主键名（用 PG 默认名）
+PKEY_IN_CREATE	0	否 — 主键用 ALTER TABLE 添加，不内嵌在 CREATE TABLE 里
+DROP_INDEXES	0	否 — 导入数据时不 drop 索引
+SYNCHRONOUS_COMMIT	0	关闭 — 关闭同步提交（off 模式，写入性能更快）
+EXPORT_INVALID	0	否 — 不导出 Oracle 中标记为 INVALID 的 PL/SQL 对象
+PLSQL_PGSQL	0	否 — ❌ 不启用 PL/SQL → PL/pgSQL 转换（这是导致包/函数/过程转换失败的主因）
+NULL_EQUAL_EMPTY	0	否 — 不将空字符串视为 NULL（保持 PostgreSQL 原生行为）
+EMPTY_LOB_NULL	0	否 — 不将空 LOB 转为 NULL
+PACKAGE_AS_SCHEMA	1	是 — 将 Oracle 包模拟为 PostgreSQL Schema 导出
+REWRITE_OUTER_JOIN	1	是 — 重写 Oracle (+) 外连接语法
+FUNCTION_STABLE	1	是 — 转换后的函数标记为 STABLE
+COMMENT_COMMIT_ROLLBACK	0	否 — 不注释掉 COMMIT/ROLLBACK（保持原样，留手工审查）
+USE_ORAFCE	0	否 — 不使用 Orafce 库
+ESTIMATE_COST	0	否 — 不启用迁移成本评估
+DUMP_AS_HTML	0	否 — 不输出 HTML 评估报告
+GEN_USER_PWD	0	否 — 导出用户时不生成默认密码
+FORCE_OWNER	0	否 — 对象所有者使用连接 PG 的用户，不强制用 Oracle 用户名
+NOESCAPE	0	否 — 未禁用转义，即启用转义处理
+STANDARD_CONFORMING_STRINGS	1	是 — 使用 SQL 标准字符串（反斜杠按字面处理）
+NO_LOB_LOCATOR	0	否 — 未禁用 LOB 定位器，即不使用 LOB 定位器（全量加载）
+XML_PRETTY	0	否 — 不使用 getStringVal()，用 getClobVal()
+LOG_ON_ERROR	0	否 — 遇到错误立即中止（不继续导入）
+FUNCTION_CHECK	1	是 — 启用 check_function_bodies，即执行 CREATE FUNCTION 时校验函数体语法
+COPY_FREEZE	0	否 — 不使用 COPY FREEZE
+CREATE_OR_REPLACE	1	是 — DDL 使用 CREATE OR REPLACE
+PG_NUMERIC_TYPE	1	是 — NUMBER(p,s) 转为 real/float（而非 numeric(p,s)）
+PG_INTEGER_TYPE	1	是 — NUMBER(p) 转为 smallint/integer/bigint
+ENABLE_MICROSECOND	1	是 — 导出时间戳毫秒部分
+AUTODETECT_SPATIAL_TYPE	1	是 — 自动检测空间列类型
+CONVERT_SRID	1	是 — 自动转换 SRID 到 EPSG
+PG_SUPPORTS_WHEN	1	是 — 目标 PG 支持 WHEN 子句
+PG_SUPPORTS_INSTEADOF	1	是 — 目标 PG 支持 INSTEAD OF
+PG_SUPPORTS_MVIEW	1	是 — 目标 PG 支持原生物化视图
+PG_SUPPORTS_CHECKOPTION	1	是 — 目标 PG 支持 CHECK OPTION
+PG_SUPPORTS_IFEXISTS	1	是 — DDL 使用 IF EXISTS
+PG_SUPPORTS_LATERAL	1	是 — 目标 PG 支持 LATERAL
+PG_SUPPORTS_PARTITION	0	否 — 禁用声明式分区导出 ❗
+BITMAP_AS_GIN	1	是 — 位图索引转 GIN 索引（btree_gin）
+PG_BACKGROUND	0	否 — 不使用 pg_background，用 dblink
+PG_SUPPORTS_SUBSTR	1	是 — 保留 substr() 调用
+PG_SUPPORTS_NAMED_OPERATOR	1	是 — 命名参数 => 转 :=
+MYSQL_PIPES_AS_CONCAT	0	否 — || 视为 OR 而非字符串拼接
+MYSQL_INTERNAL_EXTRACT_FORMAT	0	否 — 不返回内部整数格式
+
+容易混淆的反直觉写法
+少数配置项的命名是"否定式"的，需要特别注意反过来理解：
+配置项	值	字面理解陷阱	实际含义
+NOESCAPE = 0	0	"no-escape = false" → ❌ 好像禁用了转义	反的：启用转义（"no-escape 不为真" = 转义不关闭）
+DISABLE_COMMENT = 0	0	"disable-comment = false" → ❌ 好像禁用了注释	反的：不禁止注释 → 实际导出注释
+NO_LOB_LOCATOR = 0	0	"no-lob-locator = false" → ❌ 好像没禁用定位器	实际上值 0 表示不使用 LOB 定位器（全量加载）
+
+你日志里看到的核心问题
+PLSQL_PGSQL = 0 是日志中包(PACKAGE)、函数(FUNCTION)、过程(PROCEDURE)转换失败的根本原因——它把 PL/SQL → PL/pgSQL 转换引擎完全关闭了，生成的 package.sql、function.sql、procedure.sql 保留的是几乎原样的 Oracle 语法，psql 执行时自然报错。
+如果把这些全改成 1，转换引擎会工作，但转换质量取决于 ora2pg 版本和代码复杂度，仍需要手工验证。
+
+23:02
+
+
+
+
+
+
+
+
+
+添加到对话在侧边聊天中提问
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+请求批准
+
+自定义高
