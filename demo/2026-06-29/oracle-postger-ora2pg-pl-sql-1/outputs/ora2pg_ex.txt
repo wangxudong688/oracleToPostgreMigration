@@ -234,3 +234,109 @@ Ora2Pg 导出时会生成 schema/tables/table.sql，里面包含了 CREATE TABLE
 -o 用户名
 上面两个需要自己创建
 
+
+
+这个问题在 `ora2pg` 迁移 Oracle Package（包）时非常常见。**这是 ora2pg 工具的一个已知局限**：它试图将 Oracle 的 **Package Spec（规范）**直接转换为 DDL，但 PostgreSQL 根本不支持 "全局公共游
+标" (`GLOBAL CURSOR`) 或 `%ROWTYPE`。
+
+在 PG 中，所有逻辑必须封装在 `FUNCTION`, `PROCEDURE` 或者匿名块内部，不能像 Oracle 那样单独定义一个 `CURSOR ... RETURN TYPE;`。
+
+针对这个错误，既然您的目标是尽快跑通数据导入（Data First），我建议采用以下 **"两步走"** 策略来解决：
+
+### 🚀 方案一：跳过包逻辑优先导入表结构（最快解决）
+如果您现在的重点是 **把表和数据结构导进去**，Oracle Package 中的游标声明和 `%ROWTYPE` 通常只是业务接口定义，不直接影响数据存储。
+
+#### ✅ 操作步骤：
+1.  **临时重命名该文件**：避免 `import_all.sh` 再次执行报错阻断流程。
+    ```bash
+    mv ./schema/packages/package.sql ./schema/packages/package.sql.bak
+    # 或者在 import_all.sh 中注释掉该行调用
+    # psql -f ./schema/packages/package.sql -> # psql ... (注释)
+    ```
+
+2.  **继续运行导入脚本**：确保 `import_all.sh` 只执行表结构（Tables）和数据。
+
+3.  **后续处理逻辑**：等所有数据都进 Postgre 后，再针对业务代码去重写存储过程/函数。此时您可以手动将 `%ROWTYPE` 替换为具体的列名或自定义类型。
+
+---
+
+### 🛠️ 方案二：修复 `package.sql` (如果您必须保留它)
+如果您必须要在第一步包含这个文件（例如脚本逻辑强制依赖），您需要使用正则表达式清理这段非法 SQL，或者配置 ora2pg 的生成规则。
+
+#### 🔧 方法 A: 直接注释掉游标声明行
+既然报错在 `line 15` 附近且是 `%ROWTYPE` 这种 Oracle 特有语法，最快的方法是把这一整块包定义都视为“业务逻辑”暂时忽略，只保留必要的权限或表结构。
+
+使用 `sed` 快速处理该文件：
+```bash
+# 备份并替换掉非法的 ORACLE CURSOR %ROWTYPE 行（仅作为临时修复）
+cd ./schema/packages/
+cp package.sql package.sql.backup
+# 删除包含 "%ROWTYPE" 的行，或者将 "CREATE PACKAGE ..." 相关的声明注释掉
+sed -i 's/%CURSOR.*/-- &/' package.sql   # 尝试匹配 CURSOR
+# 更稳妥的做法：直接将整个 Package Spec (如果是纯 spec) 的 DDL 全部注释或移除
+```
+
+**最推荐的直接修复命令（针对报错行）：**
+由于 `ora2pg` 生成的 PG SQL 有时不会自动把 Oracle Cursor 转成 Function，建议直接用以下脚本删除这一条非法语句：
+```bash
+# 进入包目录
+cd ./schema/packages/
+
+# 创建一个新文件处理过的版本
+awk '/^CURSOR.*RETURN.*/{next} {print}' package.sql > package_fixed.sql && mv package_fixed.sql package.sql
+
+echo "已移除 CURSOR ... RETURN %ROWTYPE; 行"
+```
+
+---
+
+### ⚙️ 方案三：正确配置 `ora2pg` (一劳永逸)
+如果您不想每次都手动改文件，说明 ora2pg 的配置或参数可能没有正确处理 Package。PostgreSQL **不支持 Oracle 的 Package Spec**（只有 Function/Procedure）。
+
+1.  **检查生成模式**：
+    在运行 `ora2pg` 时，确保明确告诉它把包转成函数 (`-t function`) 而不是保留为 `-c package` (这通常只用于结构导出)。
+    
+    *错误示例*:
+    ```bash
+    # 如果直接导出了 create object type package ...
+    ora2pg -D pgdb.conf -o schema.sql 
+    ```
+
+    *推荐做法*：让 `ora2pg` 把包逻辑转成 PG **函数**。
+    ```bash
+    # 生成时指定将 Package Body 转为 Function/Procedure
+    ora2pg -c ORACLE_CONFIG.txt \
+           -t package \
+           --force-package-to-function \ 
+           > ./schema/packages/package.sql
+    
+    # ⚠️ 注意：ora2pg 默认参数可能因版本不同而异。检查您的 config file (orapg.conf)
+    ```
+
+2.  **修改 `config` 文件** (`ora2pg.config`)：
+    找到或添加这一行，强制转换逻辑（如果您的 ora2pg 支持该选项）：
+    *   **DB_PACKAGE_TO_FUNCTION**: `yes` (默认通常是 yes，但可能受限于代码结构)。
+
+3.  **解决 `%ROWTYPE`**：
+    PG 不支持 `%ROWTYPE`。如果必须保留这个返回类型定义，ora2pg 应该自动将其扩展为具体的列名列表（如 `(id INT, name TEXT...)`）。如果它没转过来，说明 ora2pg 未能关联到 `emp` 表的最新结构解
+析信息。
+    
+    **手动修复 `%ROWTYPE`**:
+    ```sql
+    -- ❌ Oracle / Bad PG: CURSOR ... RETURN emp%ROWTYPE;
+    -- ✅ PostgreSQL (必须在函数内):
+    CREATE OR REPLACE FUNCTION get_high_earners() 
+    RETURNS SETOF RECORD AS $$
+       BEGIN
+          RETURN QUERY SELECT * FROM public.emp;
+       END;
+    $$ LANGUAGE plpgsql;
+    ```
+
+### 📝 总结建议
+鉴于您现在被 `import_all.sh` 卡住：
+1.  **立刻执行**：使用方案一（方案二中的 `awk/sed` 命令）把 `.sql` 文件中包含 `%ROWTYPE`、`CREATE PACKAGE`, `CURSOR ... RETURN` 的行全部注释掉或删除。这能让脚本先跑通表导入，保证数据不丢。
+
+2.  **后期处理**：等 Postgre SQL 建好表和导入完数据后，再单独检查那个包里的逻辑（业务代码），手动重写为 PG Function。
+
+您现在可以先尝试用 `sed` 命令去掉报错行后再运行脚本吗？如果还有问题请贴出下一行的错误信息。
