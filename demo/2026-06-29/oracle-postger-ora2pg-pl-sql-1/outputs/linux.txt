@@ -1,0 +1,81 @@
+好的，上面的回复其实已经是中文了。我来更详细地用中文解释一下这些常用的 Linux 查询命令，按用途分类说明。
+文件和目录查询
+ls — 列出目录内容。常用搭配：
+ls -l 详细列表（权限、大小、修改时间）
+ls -a 显示隐藏文件
+ls -lh 人类可读的文件大小
+ls -lt 按时间排序
+find — 最强大的文件搜索工具，按名称、类型、时间、大小查找。例如：
+find . -name "*.log" 查找所有 .log 文件
+find / -type f -size +100M 查找大于 100MB 的文件
+find . -mtime -7 查找最近 7 天修改过的文件
+locate — 基于数据库的快速搜索，速度比 find 快很多，但依赖定期更新的索引（updatedb 命令更新索引）。
+du — 查看文件和目录的磁盘占用。常用：
+du -sh * 查看当前目录下每个项目的大小
+du -h --max-depth=1 只看一层目录的大小
+文件内容查询
+cat — 直接输出整个文件内容。适合小文件。
+head / tail — 看文件的开头或结尾。非常常用：
+tail -f app.log 实时跟踪日志输出（排查问题时常用）
+head -20 file.txt 只看前 20 行
+grep — 文本搜索利器，支持正则表达式：
+grep "error" app.log 搜索包含 "error" 的行
+grep -r "TODO" src/ 递归搜索目录
+grep -v "debug" app.log 排除包含 "debug" 的行
+grep -i "warning" app.log 忽略大小写
+less — 分页查看文件内容，支持上下翻页、搜索（按 / 然后输入关键词），适合大文件浏览。
+wc — 统计行数、单词数、字节数：
+wc -l file.txt 查看文件行数
+wc -c file.txt 查看文件字节数
+diff — 比较两个文件的差异，输出不同之处。
+进程与系统
+ps — 查看当前运行的进程：
+ps aux 查看所有进程的详细信息
+ps -ef | grep nginx 查找特定进程
+top / htop — 实时查看系统进程和资源占用。htop 更友好，支持鼠标操作和彩色显示。
+lsof — 列出打开的文件和网络连接。非常实用：
+lsof -i :8080 查看谁占用了 8080 端口
+lsof -u username 查看某个用户打开的文件
+netstat / ss — 查看网络连接和监听端口：
+netstat -tlnp 查看所有 TCP 监听端口
+ss -tuln 更快的替代方案
+free -h — 查看内存使用情况（总内存、已用、可用、缓存等）。
+df -h — 查看磁盘分区使用情况。
+硬件信息
+lscpu — CPU 型号、核心数、架构等信息。
+lsblk — 列出所有块设备（硬盘、分区等信息）。
+dmesg — 查看内核日志，通常用于排查硬件问题或查看系统启动信息。
+日志与监控
+journalctl — 查看 systemd 管理的系统日志：
+journalctl -u nginx.service 查看某个服务的日志
+journalctl -f 实时跟踪日志
+tail -f — 实时跟踪文件末尾追加的内容，是排查线上问题最常用的命令之一。
+sar — 查看历史性能数据（需要安装 sysstat 包），可以查看 CPU、内存、网络、IO 的历史使用情况。
+日常排查实用组合
+# 找到当前目录下最大的 10 个文件/目录
+du -sh * | sort -rh | head -10
+
+# 看看某个端口是谁占用的
+lsof -i :3000
+
+# 递归搜索某个目录下所有含关键词的文件
+grep -rn "FIXME" src/
+
+# 查看最常用的前 10 个命令
+history | awk '{print $2}' | sort | uniq -c | sort -rn | head -10
+
+# 统计日志中每种错误出现的次数
+grep "ERROR" app.log | sort | uniq -c | sort -rn
+这些是日常运维和开发中最常用的查询命令。你对哪一类或者某个具体命令想深入了解一下吗？
+
+5:58
+
+
+
+
+
+
+
+
+
+添加到对话在侧边聊天中提问

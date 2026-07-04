@@ -1,0 +1,85 @@
+这个问题要分两个角度来看：对象间的创建依赖关系 和 大数据量迁移的性能最优顺序。两者结合起来，就是下面的阶段划分。
+先明确一下 Ora2PG 导出后的文件结构：
+schema/tables/table.sql          → CREATE TABLE（不含外置索引/约束）
+schema/tables/INDEXES_table.sql  → CREATE INDEX
+schema/tables/CONSTRAINTS_table.sql → CHECK, UNIQUE, PRIMARY KEY
+schema/tables/FKEYS_table.sql    → FOREIGN KEY
+schema/types/type.sql
+schema/sequences/sequence.sql
+schema/views/view.sql
+schema/mviews/mview.sql
+schema/functions/function.sql
+schema/procedures/procedure.sql
+schema/packages/package.sql
+schema/triggers/trigger.sql
+schema/dblinks/dblink.sql
+schema/synonyms/synonym.sql
+schema/grants/grant.sql
+schema/tablespaces/tablespace.sql
+推荐导入顺序（7 阶段）
+阶段	导入内容	原因
+1 - 基础设施	TABLESPACE, TYPE, SEQUENCE	这些是上层对象的前置依赖，且没有下游反向依赖
+2 - 表结构（不含索引/约束）	TABLE	先建空表，列结构到位即可
+3 - 依赖表的对象	VIEW, MVIEW, PARTITION	依赖表已存在
+4 - 索引 + 约束 + 外键	INDEXES, CONSTRAINTS, FKEYS	数据导入前或后均可。推荐数据后（大幅提升插入速度）
+5 - 数据	COPY data	空表插入最快
+6 - 存储过程/代码类	FUNCTION, PROCEDURE, PACKAGE, TRIGGER	依赖表和数据类型已存在；触发器推迟到数据后，避免数据导入时触发
+7 - 收尾	DBLINK, SYNONYM, GRANT	依赖所有目标对象就位；GRANT 需要 superuser
+
+实际执行命令
+以下基于你的 import_all.sh，用 -y 跳过交互。假设：数据库 mydb，owner myuser，主机 192.168.1.100，端口 5432。
+阶段 1：基础设施
+# TABLESPACE（需要 superuser，用 postgres 身份执行）
+psql -h 192.168.1.100 -p 5432 -U postgres -d mydb -f schema/tablespaces/tablespace.sql
+
+# TYPE
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb --single-transaction -f schema/types/type.sql
+
+# SEQUENCE
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb --single-transaction -f schema/sequences/sequence.sql
+阶段 2：表结构
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb --single-transaction -f schema/tables/table.sql
+ psql -h 172.18.0.2 -p 5432 -U postgres -d target_db --single-transaction -f ./schema/tables/table.sql
+阶段 3：视图 / 物化视图
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb --single-transaction -f schema/views/view.sql
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb --single-transaction -f schema/mviews/mview.sql
+阶段 4：索引 + 约束 + 外键（推荐数据后执行，此处先跳过的写法）
+可以直接通过 import_all.sh 的交互选 No 来推迟，或者先不跑，等数据导入后再手动执行：
+# 索引
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb -f schema/tables/INDEXES_table.sql
+
+# 约束（CHECK, UNIQUE, PK）
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb -f schema/tables/CONSTRAINTS_table.sql
+
+# 外键
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb -f schema/tables/FKEYS_table.sql
+注意：这里不用 --single-transaction，因为索引/约束文件里通常是一堆 DDL 语句，每条独立提交更稳定。
+
+阶段 5：数据导入
+用 import_all.sh 的 -a（仅数据）模式：
+./import_all.sh -d mydb -o myuser -h 192.168.1.100 -p 5432 -a -y
+或者手动执行（如果已有 data.sql）：
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb -f data/data.sql
+阶段 6：存储过程 + 触发器
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb --single-transaction -f schema/functions/function.sql
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb --single-transaction -f schema/procedures/procedure.sql
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb --single-transaction -f schema/packages/package.sql
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb --single-transaction -f schema/triggers/trigger.sql
+阶段 7：收尾
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb --single-transaction -f schema/dblinks/dblink.sql
+psql -h 192.168.1.100 -p 5432 -U myuser -d mydb --single-transaction -f schema/synonyms/synonym.sql
+
+# GRANT 需要 superuser
+psql -h 192.168.1.100 -p 5432 -U postgres -d mydb -f schema/grants/grant.sql
+如果你只想用 import_all.sh 一把搞定
+不拆阶段、自动应答、数据后加索引：
+./import_all.sh -d mydb -o myuser -h 192.168.1.100 -p 5432 -x -y
+-x → 数据后导入索引/约束/外键
+-y → 自动回答 Yes
+但它会在主循环里按 EXPORT_TYPE 的顺序逐个交互式确认 DDL 导入。加上 -y 后会自动走完，流程是：
+TABLE (table.sql) → VIEW → SEQUENCE → TRIGGER → FUNCTION → PROCEDURE → PARTITION → MVIEW → DBLINK → SYNONYM → DIRECTORY
+→ 询问是否现在导入索引/约束/外键？ → -y 默认 Yes，选立即导入（所以数据还没到，索引先建了）
+→ GRANT（用 postgres）
+→ TABLESPACE（用 postgres）
+→ 导入数据
+有没有注意到一个问题？-y 下它的默认行为是在数据导入前就建了索引。如果你要追求导入性能，应该用拆阶段的手动方式，或者在接受询问那一步手动选 No（但 -y 下无法区分）。所以大数据量迁移推荐按上面 7 个阶段手动执行，把阶段 4（索引/约束/外键）放在阶段 5（数据）后面。
