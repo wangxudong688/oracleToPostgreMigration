@@ -68,14 +68,9 @@ history | awk '{print $2}' | sort | uniq -c | sort -rn | head -10
 grep "ERROR" app.log | sort | uniq -c | sort -rn
 这些是日常运维和开发中最常用的查询命令。你对哪一类或者某个具体命令想深入了解一下吗？
 
-5:58
+修改指定路径下所有文件的某个关键字
+find /work/oracle_to_pg/test -name "*.txt" -exec sed -i.bak 's/hello/nihao/g' {} +
 
+查找某个关键字
+grep -rl 'helle' /work/oracle_to_pg/test
 
-
-
-
-
-
-
-
-添加到对话在侧边聊天中提问

@@ -216,3 +216,181 @@ impdp username/password DIRECTORY=dump_dir DUMPFILE=backup.dmp LOGFILE=import.lo
 # 创建目录（数据库内）
 CREATE DIRECTORY dump_dir AS '/u01/dump';
 Oracle 和 PostgreSQL 的核心 SQL 差别不大，主要差异在自增机制（序列 vs SERIAL）、分页语法、函数名（SYSDATE vs NOW）、物化视图刷新方式这些地方。如果有想深入的方向（比如 PL/SQL 存储过程、分区表、RAC、AWR 分析）可以接着聊。
+
+
+
+
+------------------------------------------###########------------------------------------------------------------------------------------
+
+
+
+Oracle 数据库中的对象繁多，它们就像是乐高积木，各自承担不同的功能，共同支撑起复杂的企业级应用。
+
+为了方便你理解和复习，我将这 15 个常用对象分为 数据存储、逻辑与安全、代码与逻辑、物理与性能 4 大类，并为每一个对象提供最通俗的解释和最简明直接的 SQL 实例。
+
+一、 数据存储核心（Core Data Storage）
+1. TABLE (表)
+含义：数据库中最基础的存储单元，由行和列组成，用于存放结构化的业务数据。
+
+例子：创建一个员工表。
+
+SQL
+CREATE TABLE employees (
+    emp_id NUMBER PRIMARY KEY,
+    emp_name VARCHAR2(50),
+    salary NUMBER
+);
+2. SEQUENCE (序列)
+含义：一个自动递增（或递减）的数字生成器。通常用来为表的主键（如上面的 emp_id）自动生成连续且唯一的唯一标识。
+
+例子：创建一个从 1001 开始、每次加 1 的序列。
+
+SQL
+CREATE SEQUENCE emp_seq
+START WITH 1001
+INCREMENT BY 1;
+
+-- 使用时：INSERT INTO employees VALUES (emp_seq.NEXTVAL, '张三', 5000);
+3. TYPE (类型)
+含义：Oracle 允许用户自定义复杂的数据类型（如对象类型、数组等），超出标准数据类型（如 NUMBER, VARCHAR2）的限制，常用于高级编程。
+
+例子：定义一个包含“城市”和“街道”的地址对象类型。
+
+SQL
+CREATE OR REPLACE TYPE address_type AS OBJECT (
+    city VARCHAR2(50),
+    street VARCHAR2(100)
+);
+二、 逻辑视图与安全访问（Logical Views & Security）
+4. VIEW (视图)
+含义：一张“虚拟表”。它本身不存储数据，只是保存了一段 SQL 查询语句。访问视图时，Oracle 会动态执行背后的查询，通常用来隐藏复杂查询或屏蔽敏感列。
+
+例子：创建一个只展示高薪员工的视图。
+
+SQL
+CREATE VIEW high_salary_emp AS
+SELECT emp_id, emp_name 
+FROM employees 
+WHERE salary > 8000;
+5. MVIEW / Materialized View (物化视图)
+含义：与普通视图不同，物化视图是“物理存在的实体”。它不仅保存 SQL，还把查询结果真实地存到了磁盘上。适合对耗时较长的报表查询进行周期性缓存。
+
+例子：创建一个每 1 天自动刷新一次的部门薪资汇总物化视图。
+
+SQL
+CREATE MATERIALIZED VIEW dept_salary_mv
+REFRESH FORCE ON DEMAND
+START WITH SYSDATE NEXT SYSDATE + 1
+AS 
+SELECT emp_name, SUM(salary) AS total_sal FROM employees GROUP BY emp_name;
+6. SYNONYM (同义词)
+含义：给数据库对象起的“别名”。比如某个表的名字又长又臭，或者在别的用户（Schema）下，建个同义词可以简化访问路径。
+
+例子：为 employees 表创建一个简单好记的别名。
+
+SQL
+CREATE SYNONYM emp FOR employees;
+
+-- 以后可以直接查询：SELECT * FROM emp;
+7. DBLINK / Database Link (数据库链接)
+含义：网络通道。允许你在当前数据库中，直接跨网络去访问和操作另一个远程 Oracle 数据库中的数据。
+
+例子：创建一个连接到远程北京数据库的链接。
+
+SQL
+CREATE DATABASE LINK bj_db_link
+CONNECT TO remote_user IDENTIFIED BY remote_pwd
+USING 'bj_oracle_service';
+
+-- 跨库查询：SELECT * FROM employees@bj_db_link;
+8. GRANT (授权)
+含义：安全控制机制。数据库管理员（或对象拥有者）通过 GRANT 将特定对象的增删改查权限赋予其他用户或角色。
+
+例子：把 employees 表的查询权限给用户 scott。
+
+SQL
+GRANT SELECT ON employees TO scott;
+三、 存储过程与业务逻辑（PL/SQL Code）
+9. PROCEDURE (存储过程)
+含义：一段存储在数据库中的 PL/SQL 程序块。用于执行一连串复杂的业务操作（如扣款、生成流水），不强制要求返回值。
+
+例子：更新指定员工薪资的存储过程。
+
+SQL
+CREATE OR REPLACE PROCEDURE update_sal (p_id NUMBER, p_sal NUMBER) AS
+BEGIN
+    UPDATE employees SET salary = p_sal WHERE emp_id = p_id;
+    COMMIT;
+END;
+/
+10. FUNCTION (函数)
+含义：与存储过程类似，也是一段可重用的程序块，但必须且只能返回一个值。通常用于计算和数据转换，能直接在 SQL 语句中调用。
+
+例子：传入年薪，计算月薪的函数。
+
+SQL
+CREATE OR REPLACE FUNCTION get_monthly_sal (p_ann_sal NUMBER) 
+RETURN NUMBER AS
+BEGIN
+    RETURN p_ann_sal / 12;
+END;
+/
+11. PACKAGE (程序包)
+含义：PL/SQL 的“集装箱”。它把相关的变量、常量、游标、函数和存储过程封装在一起。分为“规范（Specification，声明）”和“主体（Body，实现）”两部分。
+
+例子：将上述员工相关的逻辑打包（此处仅展示包头声明）。
+
+SQL
+CREATE OR REPLACE PACKAGE emp_mgmt_pkg AS
+    PROCEDURE update_sal (p_id NUMBER, p_sal NUMBER);
+    FUNCTION get_monthly_sal (p_ann_sal NUMBER) RETURN NUMBER;
+END emp_mgmt_pkg;
+/
+12. TRIGGER (触发器)
+含义：数据库里的“监控探针”。当对某张表进行 INSERT/UPDATE/DELETE 操作时，触发器会被自动激活并执行，常用于审计、自动化校验。
+
+例子：在向 employees 表插入新数据前，自动打印一条日志。
+
+SQL
+CREATE OR REPLACE TRIGGER trg_before_emp_ins
+BEFORE INSERT ON employees
+FOR EACH ROW
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('准备插入新员工: ' || :NEW.emp_name);
+END;
+/
+四、 物理存储与系统管理（Physical & Infrastructure）
+13. TABLESPACE (表空间)
+含义：Oracle 数据库的物理/逻辑存储容器。它是表、索引等对象的实际容身之所，一个表空间在底层由一个或多个物理磁盘文件（.dbf）组成。
+
+例子：创建一个名为 tbs_data 的表空间，对应一个 100M 的物理文件。
+
+SQL
+CREATE TABLESPACE tbs_data
+DATAFILE '/u01/app/oracle/oradata/data01.dbf' SIZE 100M;
+
+-- 创建表时可以指定放在这里：CREATE TABLE t (...) TABLESPACE tbs_data;
+14. PARTITION (分区)
+含义：当一张表的数据量大到千万、亿级时，查询会变慢。分区技术允许你将这一张大表在底层拆分成多个独立的、更小的物理小表，但逻辑上它依然是一张表。
+
+例子：按销售年份将订单表进行按范围（RANGE）分区。
+
+SQL
+CREATE TABLE sales (
+    sale_id NUMBER,
+    sale_date DATE,
+    amount NUMBER
+)
+PARTITION BY RANGE (sale_date) (
+    PARTITION p_2025 VALUES LESS THAN (TO_DATE('2026-01-01', 'YYYY-MM-DD')),
+    PARTITION p_2026 VALUES LESS THAN (TO_DATE('2027-01-01', 'YYYY-MM-DD'))
+);
+15. DIRECTORY (目录)
+含义：Oracle 数据库内部对操作系统外部物理路径的一个“映射别名”。通常用于数据库导入导出（Data Pump）或者利用 PL/SQL 读写服务器本地的文件。
+
+例子：把服务器的 /data/dump_dir 路径映射为数据库内的 mydir 对象。
+
+SQL
+CREATE OR REPLACE DIRECTORY mydir AS '/data/dump_dir';
+
+-- 随后可以用 UTL_FILE 或者是 expdp 读写该路径下的文件

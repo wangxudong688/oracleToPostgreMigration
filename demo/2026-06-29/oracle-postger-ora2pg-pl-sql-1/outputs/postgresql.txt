@@ -447,3 +447,180 @@ show  search_path ;
 \c → 切换数据库（解决连接错库的问题）
 
 如果你在执行某个命令时遇到了问题，可以告诉我具体场景，我帮你选最合适的命令。😊
+
+
+------------------------------------------###########------------------------------------------------------------------------------------
+
+从 Oracle 转向 PostgreSQL（简称 PG）时，你会发现大部分对象概念是相通的，但在底层实现和语法上有很大的不同。特别需要注意的是：PostgreSQL 原生没有类似 Oracle 的 PACKAGE（程序包）、DBLINK（直接作为对象创建）和 DIRECTORY 对象的语法，但 PG 提供了功能相同或更优雅的替代方案（如 Schema、FDW 等）。
+
+同样为你分为 4 大类，带你看看 PostgreSQL 版本的实现：
+
+一、 数据存储核心（Core Data Storage）
+1. TABLE (表)
+含义：结构化数据存储的核心单元。与 Oracle 不同的是，PG 支持更丰富的原生数据类型（如 JSONB、数组、UUID 等）。
+
+例子：创建一个员工表，其中 emp_id 使用自增类型。
+
+SQL
+CREATE TABLE employees (
+    emp_id SERIAL PRIMARY KEY, -- SERIAL 会自动创建序列并绑定
+    emp_name VARCHAR(50),
+    salary NUMERIC(10, 2)
+);
+2. SEQUENCE (序列)
+含义：自动递增的数字生成器。在 PG 中，除了用 SERIAL 隐式创建外，也可以显式创建。
+
+例子：创建一个从 1001 开始的序列。
+
+SQL
+CREATE SEQUENCE emp_seq START WITH 1001;
+
+-- 使用时通过 nextval() 函数获取：
+-- INSERT INTO employees VALUES (nextval('emp_seq'), '张三', 5000);
+3. TYPE (类型)
+含义：PG 的自定义类型非常强大。最常用的是复合类型（Composite Type，类似结构体）和枚举类型（ENUM）。
+
+例子：创建一个代表周几的枚举类型。
+
+SQL
+CREATE TYPE week_day AS ENUM ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday');
+
+-- 之后可以作为表的字段类型：CREATE TABLE t (day_off week_day);
+二、 逻辑视图与安全访问（Logical Views & Security）
+4. VIEW (视图)
+含义：虚拟表，保存一段查询 SQL。PG 的视图同样不占用物理存储空间。
+
+例子：创建一个只看高薪员工的视图。
+
+SQL
+CREATE VIEW high_salary_emp AS
+SELECT emp_id, emp_name 
+FROM employees 
+WHERE salary > 8000;
+5. MVIEW / Materialized View (物化视图)
+含义：将查询结果物理存储在磁盘上的视图。刷新时，PG 提供了 CONCURRENTLY 参数，允许在不阻塞查询的情况下进行并发刷新（需要有唯一索引）。
+
+例子：创建并刷新一个物化视图。
+
+SQL
+CREATE MATERIALIZED VIEW dept_salary_mv AS 
+SELECT emp_name, SUM(salary) AS total_sal FROM employees GROUP BY emp_name;
+
+-- 刷新物化视图：REFRESH MATERIALIZED VIEW dept_salary_mv;
+6. SYNONYM (同义词 —— PG无原生对象，用视图/Search Path替代)
+含义：PostgreSQL 官方原生不支持 CREATE SYNONYM 语法。PG 通常通过配置 search_path（模式搜索路径）或者直接创建一个简单的 VIEW 来实现别名功能。
+
+例子：用视图代替同义词。
+
+SQL
+-- 模拟 Oracle 的别名功能
+CREATE VIEW emp AS SELECT * FROM employees;
+7. DBLINK (远程连接 —— PG中为扩展模块或 FDW)
+含义：跨库查询。在 PG 中，dblink 是一个官方自带的扩展模块，更现代、更推荐的做法是使用 FDW（外部数据包装器，Foreign Data Wrapper）。
+
+例子：使用 PG 自带的 dblink 扩展进行跨库查询。
+
+SQL
+-- 1. 首先需要安装扩展
+CREATE EXTENSION dblink;
+
+-- 2. 直接在查询中连接远程库
+SELECT * FROM dblink('host=192.168.1.100 dbname=remote_db user=res_user password=pwd',
+                     'SELECT emp_id, emp_name FROM employees')
+AS remote_data(emp_id INT, emp_name VARCHAR);
+8. GRANT (授权)
+含义：将表、视图、序列等对象的权限授予指定的用户或角色。
+
+例子：把 employees 表的只读权限赋给用户 tom。
+
+SQL
+GRANT SELECT ON TABLE employees TO tom;
+三、 存储过程与业务逻辑（PL/pgSQL Code）
+9. PACKAGE (程序包 —— PG无原生对象，用 Schema 替代)
+含义：PostgreSQL 没有 Oracle 的 PACKAGE 对象。在 PG 中，通常利用 Schema（模式） 来实现类似包的命名空间隔离，将相关的函数、存储过程放到同一个 Schema 下。
+
+例子：用 Schema 模拟包的分组。
+
+SQL
+CREATE SCHEMA emp_mgmt_pkg;
+
+-- 在该 Schema 下创建函数，调用时通过 emp_mgmt_pkg.get_monthly_sal()
+CREATE FUNCTION emp_mgmt_pkg.get_monthly_sal(ann_sal NUMERIC) ...
+10. FUNCTION (函数)
+含义：执行特定逻辑并必须返回值。PG 的旧版本（11以前）只有函数，函数内部默认不能直接执行 COMMIT/ROLLBACK（除非用特殊方式）。
+
+例子：创建一个计算月薪的函数（使用 PL/pgSQL 语言）。
+
+SQL
+CREATE OR REPLACE FUNCTION get_monthly_sal (ann_sal NUMERIC) 
+RETURNS NUMERIC AS $$
+BEGIN
+    RETURN ann_sal / 12.0;
+END;
+$$ LANGUAGE plpgsql;
+11. PROCEDURE (存储过程)
+含义：PG 从 11 版本开始正式引入 PROCEDURE。与函数不同，存储过程没有返回值，并且支持在内部使用 COMMIT 和 ROLLBACK 进行事务控制。
+
+例子：更新薪资并提交事务的存储过程。
+
+SQL
+CREATE OR REPLACE PROCEDURE update_sal (p_id INT, p_sal NUMERIC) AS $$
+BEGIN
+    UPDATE employees SET salary = p_sal WHERE emp_id = p_id;
+    COMMIT; -- 支持事务提交
+END;
+$$ LANGUAGE plpgsql;
+
+-- 调用方法：CALL update_sal(1, 6000);
+12. TRIGGER (触发器)
+含义：事件驱动的自动执行程序。在 PG 中，定义触发器分两步：先写一个返回类型为 TRIGGER 的触发器函数，再创建触发器本身与表绑定。
+
+例子：
+
+SQL
+-- 1. 定义触发器函数
+CREATE OR REPLACE FUNCTION log_emp_insert() RETURNS TRIGGER AS $$
+BEGIN
+    RAISE NOTICE '准备插入新员工: %', NEW.emp_name;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 2. 创建触发器绑定到表
+CREATE TRIGGER trg_before_emp_ins
+BEFORE INSERT ON employees
+FOR EACH ROW EXECUTE FUNCTION log_emp_insert();
+四、 物理存储与系统管理（Physical & Infrastructure）
+13. TABLESPACE (表空间)
+含义：定义在文件系统中的一个目录，用来指定 PG 数据库在磁盘上存储物理文件的实际位置。
+
+例子：创建一个表空间指向服务器的某个挂载盘目录（该目录必须为空且 pg 账号有读写权限）。
+
+SQL
+CREATE TABLESPACE tbs_data LOCATION '/mnt/ssd_disk/pg_data';
+
+-- 创建表时指定表空间：CREATE TABLE t (...) TABLESPACE tbs_data;
+14. PARTITION (分区)
+含义：PG 从 10 版本开始引入了声明式分区（Declarative Partitioning）。将一张大表按照某种规则，物理上拆分为多个分区子表。
+
+例子：按范围（RANGE）创建订单分区主表和子表。
+
+SQL
+-- 创建主表（不存实际数据）
+CREATE TABLE sales (
+    sale_id INT,
+    sale_date DATE NOT NULL,
+    amount NUMERIC
+) PARTITION BY RANGE (sale_date);
+
+-- 创建真实存储数据的分区子表
+CREATE TABLE sales_2025 PARTITION OF sales
+    FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+15. DIRECTORY (目录 —— PG无原生对象，用系统命令/扩展替代)
+含义：PostgreSQL 没有像 Oracle 那样的 CREATE DIRECTORY 对象。PG 在读写服务器本地文件时（如 COPY 命令或 adminpack 扩展），直接在 SQL 语句中指定服务器的绝对路径。
+
+例子：在 PG 中直接利用服务器路径导出数据。
+
+SQL
+-- PG 不需要建目录对象，直接由超级用户指定绝对路径
+COPY employees TO '/var/lib/postgresql/data/emp_export.csv' WITH CSV HEADER;
