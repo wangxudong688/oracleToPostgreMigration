@@ -1,0 +1,185 @@
+用 A5:SQL Mk-2 做导出 + Excel 比对，关键是把两边元数据格式化成相同的列结构，这样 Excel 里才能直接做行级差异比对。下面是完整流程。
+第一步：确认导出维度
+一张 Sheet 放一个对象维度，每个维度两边用完全相同的列名和列顺序。建议按这个结构组织：
+Sheet	A5 SQL 输出列（Oracle 端 / PostgreSQL 端统一）
+表及列	schema, table_name, column_name, data_type, nullable, default, ordinal_position
+主键	schema, table_name, constraint_name, column_name, position
+外键	schema, table_name, constraint_name, column_name, ref_table, ref_column, position
+其他约束	schema, table_name, constraint_name, constraint_type, column_name, position
+索引	schema, table_name, index_name, uniqueness, column_name, position
+序列	schema, sequence_name, min_value, max_value, increment, last_value
+视图	schema, view_name（+定义哈希，不要存全文）
+触发器	schema, table_name, trigger_name, event, timing, enabled
+函数/过程	schema, object_name, object_type, argument_count, signature_md5
+物化视图	schema, mv_name, refresh_method
+同义词	schema, synonym_name, target_owner, target_object
+自定义类型	schema, type_name, type_category
+注释	schema, table_name, column_name, comment
+分区信息	schema, table_name, partition_method, partition_count
+权限	schema, object_type, object_name, grantee, privilege
+
+第二步：A5 导出操作
+Oracle 端
+在 A5 里连接到 Oracle
+对每个维度执行一条 SELECT SQL（上面表格对应的列集，两边 SELECT 列名和顺序保持一致）
+查询结果出来后：右键 → 导出 → Excel 文件（.xlsx）
+导出的 Sheet 名称按上面表格命名（如 表及列、主键）
+导出格式设置建议：勾选 字段名作为第一行
+数据类型选 文本（防止数字格式变形）
+
+PostgreSQL 端
+同样的步骤，用对应的 PostgreSQL SQL 导出到第二个 Excel 文件。
+第三步：Excel 内对比
+方法 A：逐 sheet 手动对比（数据量小时）
+把两个 Excel 的对应 sheet 并排打开，用 VLOOKUP 或条件格式标记差异：
+以某个 Sheet 为例（如 表及列）
+
+在两份 Excel 的同一 Sheet 各加一列拼接键：
+A 列 = schema + "|" + table_name + "|" + column_name + "|" + ordinal_position
+（用 & 或 CONCATENATE 拼接，确保两边的拼接规则完全一致）
+
+新建一个合并 Sheet，拿 Oracle 的拼接列去 VLOOKUP PostgreSQL 对应行的每一列：
+'Oracle 这行在 PostgreSQL 中是否存在'
+=VLOOKUP(A2, 'PG表及列'!A:A, 1, FALSE)
+
+'比较 data_type 是否一致'
+=IF(VLOOKUP(A2, 'PG表及列'!A:K, 5, FALSE) = B2, "OK", "差异")
+
+对每个维度重复。
+
+方法 B：整表直接并排 + 条件格式（数据量大时）
+把同一维度的数据从两个 Excel 复制到**同一个工作簿的相邻行
+
+
+
+
+正在重新连接 /5
+
+
+
+
+
+
+已处理 3m 53s
+
+
+
+
+
+
+
+明白，用 A5:SQL Mk-2 把两边 schema 全部导出到 Excel 再对比。这个做法的关键是导出什么、怎么比。下面说具体过程。
+第一步：A5 连接两端并导出
+Oracle 端
+在 A5 里连接 Oracle Schema，对每个对象类型做一次导出：
+右键 Schema → Export Object List（导出对象列表）
+或者用 A5 的 Database Info 面板 → All Objects → 选中所有对象类型 → 右键 Export to Excel
+导出的 Excel 里，让 A5 包含这些列：Object Name / Type / Schema
+Columns: Name, Data Type, Nullable, Default, Comment
+Constraints: Name, Type (PK/FK/UNIQUE/CHECK), Columns
+Indexes: Name, Columns, Uniqueness
+其他: 序列当前值、视图定义、触发器等
+
+A5 的导出菜单路径大致为：Tools → Export → Export to Excel，或在 Object List 界面右键 → Output as Excel file。
+PostgreSQL 端
+同样操作，A5 连接 PostgreSQL 后：
+选中目标 Schema → 右键 → Export Object List
+同样勾选所有对象类型，导出到另一个 Excel 文件
+第二步：确定 Excle 对比维度
+从 A5 导出两张表——Oracle 端 sheet 和 PostgreSQL 端 sheet——在 Excel 里对以下维度做逐项比对：
+2.1 对象清单总表（确定两边对象数量一致）
+对象类型	Oracle 数量	PostgreSQL 数量	差异
+TABLE			
+VIEW			
+INDEX			
+PRIMARY KEY			
+FOREIGN KEY			
+UNIQUE			
+CHECK			
+SEQUENCE			
+TRIGGER			
+FUNCTION			
+PROCEDURE			
+PACKAGE			
+MATERIALIZED VIEW			
+SYNONYM			
+TYPE (自定义)			
+COMMENT			
+
+这一步用 COUNTIF 或数据透视表即可得出。
+2.2 列级别比对（VLOOKUP 或 Power Query Merge）
+将 Oracle 的列清单和 PostgreSQL 的列清单各放一列，用 VLOOKUP 或 Power Query 做 Left Outer Join 找出只在一端出现的对象。
+Oracle_Columns.xlsx        PG_Columns.xlsx
+─────────────────────    ─────────────────────
+TABLE_NAME               TABLE_NAME
+COLUMN_NAME              COLUMN_NAME
+DATA_TYPE                DATA_TYPE
+NULLABLE                 IS_NULLABLE
+DATA_DEFAULT             COLUMN_DEFAULT
+COMMENT                  COMMENT
+用 Excel 公式：
+=IF(COUNTIF(PG_column_list, A2)=0, "PG缺", "存在")
+把结果是"PG缺"的筛出来逐项修复。
+2.3 数据类型映射校验
+Oracle 和 PostgreSQL 的数据类型名不同，Excel 里需要一张映射对照表做辅助列：
+Oracle 类型	期望的 PostgreSQL 类型	实际 PG 类型	结果
+VARCHAR2(100)	character varying(100)	character varying(100)	✅
+NUMBER(10,0)	integer	integer	✅
+NUMBER(18,2)	numeric(18,2)	numeric(18,2)	✅
+DATE	timestamp(0) 日期兼容	timestamp without time zone	⚠️ 需确认时区
+CLOB	text	text	✅
+BLOB	bytea	oid	❌ 需修正
+
+在 Excel 里用 IF 公式做自动标记。
+第三步：快速比对方法（不用逐行看）
+方法一：直接粘贴 + 条件格式
+把两边导出的对象清单（按名称排序后）分别粘贴到同一 Excel 的两个 sheet
+在第三个 sheet 里用公式引用两边单元格，例如：Sheet3!A2 = =Sheet1!A2=Sheet2!A2
+结果为 FALSE 的用条件格式标红
+红色行就是差异
+方法二：Power Query（推荐，大数据量时好用）
+Excel → Data → Get Data → From File → From Excel Workbook，加载两端导出的文件：
+加载两个查询
+Home → Merge Queries，按对象名左连接
+展开合并结果，添加自定义列判断差异
+筛选出 Table.AddColumn 标记的差异行
+方法三：直接把两个 Excel 拖到 Python 里 diff
+如果你方便用脚本，最简单的是：
+import pandas as pd
+
+ora = pd.read_excel('ora_export.xlsx', sheet_name='COLUMNS')
+pg  = pd.read_excel('pg_export.xlsx', sheet_name='COLUMNS')
+
+merged = ora.merge(pg, on=['TABLE_NAME','COLUMN_NAME'],
+                   how='outer', indicator=True)
+
+# 只在Oracle有但PG没有的
+print(merged[merged['_merge'] == 'left_only'])
+# 只在PG有但Oracle没有的
+print(merged[merged['_merge'] == 'right_only'])
+# 两边都有但类型不一致的
+merged['type_match'] = merged['DATA_TYPE_x'] == matched['DATA_TYPE_y']
+print(merged[merged['type_match'] == False])
+第四步：A5 分块导出建议
+A5 默认导出把所有对象塞进一个 sheet，对比起来很痛苦。建议按对象类型分次导出，一个类型一个文件：
+ora_01_tables.xlsx
+ora_02_views.xlsx
+ora_03_constraints.xlsx
+ora_04_indexes.xlsx
+ora_05_sequences.xlsx
+ora_06_triggers.xlsx
+ora_07_functions.xlsx
+ora_08_comments.xlsx
+对端 PostgreSQL 同样结构：
+pg_01_tables.xlsx
+pg_02_views.xlsx
+...
+然后按文件对逐一对比。分文件比放在同一个大 Excel 的不同 sheet 里比，前者公式写起来更简单。
+第五步：Excel 对比的限制
+能做的	较难做到的
+对象存在性、列名、数据类型	函数/触发器逻辑正确性
+约束、索引的结构完整性	分区方案语义等价性
+注释、默认值	同义词映射链完整性
+序列当前值数值	权限和角色模型差异
+
+所以你用 Excel 方法校验完后，函数、触发器、包这几个还是要回到数据库里编译一次或跑一个用例来确认逻辑层面正确。Excel 只能验证"存在"和"结构"，不能验证"语义正确"。
