@@ -1,0 +1,57 @@
+1.MariaDB 开启 Oracle 兼容：准备工作。
+在 MariaDB 实例的配置文件（my.cnf）中设置 sql_mode=ORACLE。这一步是你能成功迁移 Oracle 存储过程和复杂 SQL 的关键保障。
+2.表结构导出与修正：结构迁移。
+使用工具（如 DBeaver 或 MariaDB 自带的转换向导）导出 Oracle 的 DDL。重点检查并修正大对象类型（BLOB/CLOB 改为 LONGBLOB/LONGTEXT）和空字符串处理（Oracle 把空串当 NULL，而 MariaDB 不一样）。
+3.批量数据抽水：数据迁移。
+使用 DataX 或 Kettle 建立管道，将数据批量灌入 MariaDB。大数据量时，记得在导入前临时关闭 MariaDB 的外键检查和唯一性检查（SET FOREIGN_KEY_CHECKS=0;）以提升速度。
+4.业务逻辑与存储过程改写：代码调优。
+将原本的 Oracle 存储过程和触发器放入开启了 ORACLE 模式的 MariaDB 中编译。检查不支持的 Oracle 内置函数（如 SYSDATE、DECODE 等），将其替换为 MariaDB 对应的函数。
+
+
+
+使用方法
+1. 修改配置参数
+用编辑器打开脚本，修改这几行：
+
+bash
+DB_USER="your_username"      # 你的数据库用户名
+DB_PASS="your_password"      # 你的密码
+DB_CONNECT="//localhost:1521/XE"  # 连接字符串
+DIRECTORY_NAME="DPUMP_DIR"   # 目录对象名（需要提前创建）
+2. 赋予执行权限
+bash
+chmod +x export_metadata.sh
+3. 运行脚本
+bash
+./export_metadata.sh
+4. 交互式选择
+脚本会提示你选择导出方式：
+
+选项 1：只用 expdp（生成 .dmp 文件）
+
+选项 2：只用 DBMS_METADATA（生成 .sql 文件）
+
+选项 3：两种都用
+
+输出文件
+脚本运行后会产生：
+
+文件	说明
+metadata_YYYYMMDD_HHMMSS.dmp	expdp 导出的二进制 dump 文件
+expdp_YYYYMMDD_HHMMSS.log	expdp 的日志文件
+ddl_output/ddl_export_YYYYMMDD_HHMMSS.sql	DBMS_METADATA 导出的 SQL 文件
+注意事项
+Oracle 目录对象：使用 expdp 前需要先创建目录对象并授权：
+
+sql
+CREATE DIRECTORY DPUMP_DIR AS '/home/oracle/dump';
+GRANT READ, WRITE ON DIRECTORY DPUMP_DIR TO your_username;
+环境变量：确保 ORACLE_HOME 已设置，脚本会自动将 Oracle 工具加入 PATH。
+
+权限要求：
+
+expdp 方式需要 DATAPUMP_EXP_FULL_DATABASE 角色（导出全库）或 EXP_FULL_DATABASE 角色
+
+DBMS_METADATA 方式需要 SELECT_CATALOG_ROLE 角色
+
+SQL 文件大小：如果对象很多，SQL 文件可能很大，建议在 sqlplus 中适当调整 LONG 参数。

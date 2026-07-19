@@ -1,0 +1,50 @@
+brew install uv
+
+
+export HF_ENDPOINT=https://hf-mirror.com
+
+
+
+----------------hf 命令行工具的帮助菜单--------------------
+
+auth：管理身份验证（登录、登出等）。
+
+buckets：与存储桶（buckets）交互的命令。
+
+cache：管理本地缓存目录。
+
+collections：与 Hugging Face 平台上的合集（collections）进行交互。
+
+cp：在本地路径、模型仓库和存储桶之间复制文件。
+
+datasets：与 Hugging Face 平台上的数据集（datasets）进行交互。
+
+discussions：管理 Hugging Face 平台上的讨论（discussions）和拉取请求（pull requests）。
+
+download：从 Hugging Face 平台下载文件。
+
+endpoints：管理 Hugging Face 推理端点（Inference Endpoints）。
+
+env：打印当前运行环境的信息。
+
+extensions：管理 hf 命令行工具的扩展插件。
+
+jobs：在 Hugging Face 平台上运行和管理任务（Jobs）。
+
+models：与 Hugging Face 平台上的模型（models）进行交互。
+
+papers：与 Hugging Face 平台上的论文（papers）进行交互。
+
+repos：管理 Hugging Face 平台上的代码/模型仓库（repos）。
+
+sandbox：在 Hugging Face Jobs 上运行和管理沙盒环境（sandboxes）。
+
+skills：管理 AI 助手的技能（skills）。
+
+spaces：与 Hugging Face 平台上的应用空间（spaces）进行交互。
+
+sync：在本地目录和存储桶之间同步文件。
+
+update：将 hf 命令行工具更新到最新版本。
+
+upload：向 Hugging Face 平台上传文件或文件夹。
