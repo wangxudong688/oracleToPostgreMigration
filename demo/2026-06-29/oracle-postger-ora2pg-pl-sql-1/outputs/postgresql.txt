@@ -624,3 +624,6 @@ CREATE TABLE sales_2025 PARTITION OF sales
 SQL
 -- PG 不需要建目录对象，直接由超级用户指定绝对路径
 COPY employees TO '/var/lib/postgresql/data/emp_export.csv' WITH CSV HEADER;
+
+
+
