@@ -1,0 +1,245 @@
+这本质上是一个 PostgreSQL 的行大小限制问题，和 ora2pg 本身的配置关系不大。下面从原理到解决方案展开。
+问题根因
+PostgreSQL 默认页大小是 8KB（8192 bytes），减去页头、行头、ItemId 等开销，实际留给一行数据的空间大约在 ~8160 bytes 左右。
+一张 900+ 列的表，即便每列数据量不大，累积起来也会超限：
+开销项	大小估算
+行头（HeapTupleHeader）	~24 bytes
+null bitmap（900 列）	ceil(900/8) = 113 bytes
+列数据叠加	取决于字段类型
+列偏移/长度数组	~1–2 bytes/列
+
+如果每列平均 6–7 bytes（比如一堆 NUMBER、VARCHAR(10)、DATE），900 列就逼近甚至超过 8000 bytes。ora2pg 使用 COPY 方式导入时，PostgreSQL 在构建 tuple 阶段就会报：
+row is too large: size ... exceeds maximum ... (8160)
+解决方案（按推荐顺序）
+1. 垂直拆分（最推荐，架构上正确）
+900 列通常意味着表是极度非规范化的设计。按业务语义拆成多个表，用共享主键 1:1 关联：
+-- 原表
+CREATE TABLE wide_table (
+  id NUMBER PRIMARY KEY,
+  col1 NUMBER, col2 NUMBER, ... col300 NUMBER,
+  col301 VARCHAR2(100), ... col600 VARCHAR2(100),
+  ... col900 DATE
+);
+
+-- 拆为
+CREATE TABLE wide_table_a (
+  id NUMBER PRIMARY KEY,
+  col1 NUMBER, ... col300 NUMBER
+);
+CREATE TABLE wide_table_b (
+  id NUMBER PRIMARY KEY,
+  col301 VARCHAR2(100), ... col600 VARCHAR2(100)
+);
+CREATE TABLE wide_table_c (
+  id NUMBER PRIMARY KEY,
+  .......
+);
+ora2pg 的 FILE_PER_TABLE 和自定义查询（WHERE 配合列白名单）可以分别导出每个子集，再各自导入。
+优点： 彻底解决问题，而且 PostgreSQL 查询时跳过无关列，冷数据也可以移到不同的表空间。
+2. 降低 toast_tuple_target（无需改表结构，最简单）
+PostgreSQL 从 11 开始提供了 toast_tuple_target 存储参数，控制 tuple 达到多大时触发 TOAST 压缩/外存。默认是 2048 bytes。对于宽表，可以设到 128 甚至更低：
+ALTER TABLE your_table SET (toast_tuple_target = 128);
+如果表还没建，在 ora2pg 的导出 DDL 里加上：
+CREATE TABLE your_table (
+  ...
+) WITH (toast_tuple_target = 128);
+原理： 降低阈值后，PostgreSQL 更积极地将列值压缩并移至 TOAST 表中，从而让行在页内变小。但这取决于各个列类型是否能被 TOAST 处理（可 TOAST 的类型：varchar, text, bytea, numeric 等；固定长度类型如 int8, timestamp 不能被 TOAST）。
+注意： 如果列大多是 NUMBER / INT / DATE 这类固定长度类型，TOAST 也无法帮上忙。
+3. 增大 PostgreSQL 的 block size（需要重编译）
+从源码编译 PostgreSQL 时指定 --with-blocksize=32（单位 KB，可选 1, 2, 4, 8, 16, 32），将页大小改为 32KB。这样最大行上限从 ~8KB 升到 ~32KB。
+如果不便自行编译，云服务或 Docker 环境可能不支持。且这是全局参数，对更小行的表也会浪费空间和 I/O，不太推荐。
+4. 改用 FDW + 查询层透传
+不真正导入到 PG，而是通过 oracle_fdw 在 PG 内直接查询 Oracle 的宽表。但只能缓解查询层的问题，数据仍然留在 Oracle。
+5. 部分字段用 JSONB/复合类型聚合
+把 900 列中语义相近的一组小列聚合成一个 JSONB 或复合类型列：
+col_group JSONB  -- {"col1": val1, "col2": val2, ...}
+这样在 pg 层面只有少量列，不再触发行大小限制。代价是丢失了列上的索引、约束、列级权限等能力，只适合"内容为主、查询条件多为 id"的场景。
+与 ora2pg 相关的配置提示
+DATA_LIMIT 控制的是导出文件大小或批次行数，不解决单行超限。
+用 TYPE TABLE 导出时，可以在 DDL 里加上 toast_tuple_target。
+如果用 COPY 模式导入失败，可以换 INSERT 模式（数据分 INSERT 语句，PG 端行大小判定是一样的，不会绕过限制）。
+如果源 Oracle 列非常多，考虑在 EXPORT 的 WHERE 子句里按列分组导出多个文件，分别映射到拆分后的表。
+总结
+方案	改动量	效果	推荐度
+垂直拆分	重构 schema + 适配查询	彻底，数据模型变好	★★★★★
+降低 toast_tuple_target	一行 ALTER	立竿见影，但依赖 TOAST 能力	★★★★
+增大 block size	重编译 PG	全局生效，部署麻烦	★★★
+JSONB 聚合	改 schema 和查询	折衷，损失列级能力	★★
+FDW 透查	不改存储	治标不治本	★
+
+如果这些表在下游主要做宽表展示或 OLAP 聚合，垂直拆分是长远方向；如果是生产高频 OLTP，先试 toast_tuple_target = 128 快速绕过，再择机拆分。
+
+
+
+
+好问题。我来逐一分析这两个方案的可行性。
+方案 1：INSERT 一半列 + UPDATE 另一半
+结论：不可行。
+为什么不行
+PostgreSQL 的 UPDATE 在 MVCC 下不是原地修改，而是写一条全新的 tuple（新行版本）。这条新 tuple 包含所有 900 列的数据。所以：
+Step 1: INSERT (col1..col450)  → tuple 1，只有 450 列，可能能放进去
+Step 2: UPDATE SET col451..col900 → tuple 2，包含全部 900 列数据
+最终落到磁盘上的 tuple 2 和一次性 INSERT 900 列的 tuple 在物理大小+布局上完全一样，同样撞 8160 byte 的上限。
+唯一能工作的变体（但已不是同一方案）
+如果分两张物理表，各 450 列，共享同一个 PK，然后通过 VIEW + JOIN 对外暴露——这就是垂直拆分，它本身不依赖 INSERT/UPDATE 技巧：
+CREATE TABLE t_a (id PK, col1..col450);
+CREATE TABLE t_b (id PK, col451..col900);
+
+-- 先插入 t_a
+INSERT INTO t_a SELECT id, col1..col450 FROM source;
+
+-- 再插入 t_b（通过 JOIN）
+INSERT INTO t_b SELECT id, col451..col900 FROM source;
+两张表各自行头减半，各自行宽减半，各自能放下。但这已经不是"同一张表先 INSERT 再 UPDATE"，而是显式垂直分区。
+方案 2：PG 也使用 EUC 字符集来减少行宽
+结论：技术上可行，但效果有限，且代价较高。
+原理验证
+格式	CJK 字符	ASCII 字符
+UTF-8	3 bytes	1 byte
+EUC-CN/EUC-JP/EUC-KR	2 bytes	1 byte
+
+对纯 CJK 文本，EUC 比 UTF-8 省 33%。如果一个 VARCHAR(100) 列存了 100 个中文字：
+UTF-8: 300 bytes 数据
+EUC: 200 bytes 数据 → 省 100 bytes
+但问题在于：900 列的瓶颈不只在文本数据
+回顾前面算过的固定开销：
+项目	大小
+tuple 头	24 bytes
+null bitmap (900 列)	113 bytes
+变长列偏移数组 (900 列)	~1800 bytes
+小计（固定开销）	~1937 bytes
+页内可用	8160 - 1937 = 6223 bytes
+
+这 6223 bytes 才是留给实际数据的空间，要分给 900 列。
+UTF-8 极限: 6223 / 3 ≈ 2073 个 CJK 字符 / 900 列 ≈ 2.3 字符/列
+EUC   极限: 6223 / 2 ≈ 3111 个 CJK 字符 / 900 列 ≈ 3.5 字符/列
+EUC 只能多容 ~1 个中文字每列。 如果原始数据里每列本来就只存 1–2 个中文字（如缩写代码、状态标志），那 EUC 的确有可能刚好把行压进 8KB。但如果有任何一列值较长，或者有大量数值/日期类型的列（字符集对它们影响为零），EUC 就杯水车薪。
+具体操作步骤（如果你还是想试验）
+Step 1：PG 建库指定 EUC 编码
+CREATE DATABASE target_db
+  ENCODING 'EUC_CN'    -- 或 EUC_JP / EUC_KR / EUC_TW
+  LC_COLLATE 'C'
+  LC_CTYPE 'C'
+  TEMPLATE template0;
+Step 2：ora2pg 配置
+在 ora2pg.conf 中：
+PG_ENCODING          EUC_CN
+ORACLE_DSN           dbi:Oracle:host=...;sid=...
+ora2pg 会自动在 Oracle 端读取数据后用你的 EUC 编码写入 PG。
+如果 Oracle 端是 AL32UTF8（常用），ora2pg 导出时做编码转换，不需要额外步骤。
+Step 3：PG 客户端连接
+客户端连接时需指定编码，否则 libpq 默认以 server 编码返回，EUC_CN 的字节流会被终端或驱动错误解释。连接串加：
+PGCLIENTENCODING=EUC_CN
+或连接后执行：
+SET client_encoding TO 'EUC_CN';
+大多数现代驱动（JDBC, psycopg2, Npgsql）也能设置 encoding 参数。
+使用 EUC 的代价
+问题	说明
+应用兼容	现代框架默认 UTF-8，EUC 需要处处显式指定编码
+函数限制	lower('阿') 等大小写转换在 EUC 下不可用，PG 多字节编码只支持 C/POSIX 排序
+LENGTH() 语义	EUC 下 LENGTH() 返回字符数，OCTET_LENGTH() 返回字节数——和 LENGTHB() 含义不同，迁移 SQL 时容易错
+索引/模式匹配	非 UTF-8 下 ~ 正则、LIKE 对 CJK 的行为可能出现意外
+未来迁移	从 EUC 迁移到 UTF-8 需要 pg_dump --encoding=UTF8 重新导入，对大库是停机操作
+pg_dump	默认按源库编码导出，恢复时可能有编码不一致问题
+
+什么时候可以考虑
+表的 900 列中：
+绝大多数是 VARCHAR/CHAR2 且存的是短中文文本（状态码、标签、名称缩写）
+每列数据长度 ≤ 3 bytes 中文字（即 UTF-8 下 9 bytes）
+列中几乎不含 NUMBER/DATE/CLOB/BLOB 等非字符类型
+这种情况下，EUC 和 UTF-8 的差距可能刚好是"过得去"和"过不去"的分界线。
+总结：两个方案的评价
+方案	定性	评语
+1. INSERT + UPDATE 分两步	❌ 不可行	UPDATE 一样全量重写 tuple，绕不过限
+2. PG 用 EUC 字符集	⚠️ 可行但效果窄	仅对全 CJK 文本列有效，且有持续维护成本
+
+如果真要尝试方案 2，建议同时打开 toast_tuple_target = 128 组合使用，加大成功概率。但如果 900 列中包含大量数值/日期/BLOB 列，或者列中数据超过"每列 2–3 个中文字"的量级，这条路走不通，还是得回到垂直拆分上去。
+
+
+
+
+你说得对，是我理解错了——客户是两个方案，不是组合方案。方案 2 的本意就是"Oracle 用 EUC_JP，PG 也用 EUC_JP，不做转码，借此省行宽"。我上一轮直接跳到 UTF-8 建库，等于擅自改了方案。
+重新来，给你一份正确的 PG 建 EUC_JP + 迁移实施流程。
+方案确认
+两侧字符集相同：Oracle → EUC_JP，PG → EUC_JP
+不对列宽，但对纯文本列的实际行宽有压缩效果（前面分析过，每 CJK 字符省 1 byte）
+且因为无需转码，字符集错误风险 = 0
+实施步骤
+1 — 创建 EUC_JP 的 PostgreSQL 数据库
+CREATE DATABASE target_db
+  ENCODING 'EUC_JP'
+  LC_COLLATE 'ja_JP.EUC-JP'
+  LC_CTYPE 'ja_JP.EUC-JP'
+  TEMPLATE template0;
+如果 OS 没有 ja_JP.EUC-JP locale，退而用 C：
+CREATE DATABASE target_db
+  ENCODING 'EUC_JP'
+  LC_COLLATE 'C'
+  LC_CTYPE 'C'
+  TEMPLATE template0;
+2 — 确认编译时支持
+PG 在 configure 时默认包含 EUC_JP：
+psql -d target_db -c "SHOW server_encoding;"
+# → EUC_JP
+3 — ora2pg.conf 配置
+因为是同字符集直迁，告诉 ora2pg 两侧都不做额外转换：
+# Oracle 侧
+ORACLE_DSN   dbi:Oracle:host=<host>;sid=<sid>;port=1521
+ORACLE_USER  <user>
+ORACLE_PWD   <pwd>
+
+# PG 侧
+PG_DSN       dbi:Pg:dbname=target_db;host=<pg_host>;port=5432
+PG_USER      <pg_user>
+PG_PWD       <pg_pwd>
+
+# 关键：不转编码
+DATA_ENCODING   EUC_JP      # 和 Oracle 库字符集一致
+PG_ENCODING     EUC_JP      # 和 PG 数据库编码一致
+OUTPUT_ENCODING EUC_JP      # 如果有中间文件，也保持 EUC-JP
+
+# 其他
+TYPE           COPY
+STOP_ON_ERROR  1
+4 — 环境变量（可选，但推荐）
+虽然两侧都是 EUC_JP，但为了让 Oracle client 层和 ora2pg 的编码声明完全对位，设置：
+export NLS_LANG=Japanese_Japan.EUCJP
+如果不设，Oracle client 默认使用 DB 本身的字符集（也是 EUC_JP），效果一样。但显式写出更安全，避免环境中其他变量干扰。
+5 — 导出导入
+# 导出到中间文件（先导出，后导入，方便排错）
+ora2pg -c ora2pg.conf -t COPY -o data.sql -b ./output
+
+# 验证——EUC-JP 的日语文字应该是 2 byte/字
+# 如果看到 0x8E, 0xA1-0xFE 等字节序列，就是合法的 EUC-JP
+xxd ./output/data.sql | head -20
+
+# 导入
+psql -d target_db -f ./output/data.sql
+或一步直达：
+ora2pg -c ora2pg.conf -t COPY -i
+6 — 验证数据
+-- Oracle 端
+SELECT id, DUMP(col1, 1016) FROM wide_table WHERE ROWNUM <= 3;
+
+-- PG 端
+SELECT id, encode(convert_to(col1, 'EUC_JP'), 'hex') FROM wide_table LIMIT 3;
+因为两边都是 EUC-JP，且无转码，hex 输出应该逐字节一致。
+关于行宽的补充
+EUC_JP 下每 CJK 字符占 2 bytes（vs UTF-8 的 3 bytes）。回到之前那张开销表：
+固定开销（头+null bitmap+偏移数组）:  ~1937 bytes
+可用数据空间:                           6223 bytes
+
+EUC_JP 下每列可容纳: 6223 / 2 ≈ 3111 CJK 字符 / 900 列 ≈ 3.5 字符/列
+UTF-8 下每列可容纳:  6223 / 3 ≈ 2073 CJK 字符 / 900 列 ≈ 2.3 字符/列
+如果每列数据源在 3 字以内，EUC_JP 可能就是能过和不能过的分界线。但稳妥起见，建议和 toast_tuple_target = 128 组合使用。
+ALTER TABLE wide_table SET (toast_tuple_target = 128);
+这样两种手段叠加，绕过 8KB 的概率会大很多。
+EUC_JP 方案的注意事项
+事项	说明
+LENGTH() vs LENGTHB()	LENGTH() 返回字符数（而非字节数），LENGTHB() 返回字节数；如果 Oracle 侧的 SQL 用了 LENGTHB，迁移时要做对应调整
+排序	如果用 LC_COLLATE 'C'，ORDER BY 按字节序排，日语五十音顺序不对；只有 ja_JP.EUC-JP locale 下排序才正确
+全文检索	PG 的 pg_trgm 和全文搜索在 EUC_JP 下可能不如 UTF-8 灵活
+客户端连接	连接时需声明编码一致，否则乱码：SET client_encoding TO 'EUC_JP';
+行宽实测	建完表后用 INSERT 填一行真实长度的数据，测 pg_column_size() 确认是否真能落地
+
+选方案 2（EUC-JP）是正确的方向，之前我跑偏到 UTF-8 方向去了。
