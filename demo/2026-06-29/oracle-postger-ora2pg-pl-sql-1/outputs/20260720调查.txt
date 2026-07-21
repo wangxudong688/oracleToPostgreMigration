@@ -243,3 +243,113 @@ LENGTH() vs LENGTHB()	LENGTH() 返回字符数（而非字节数），LENGTHB() 
 行宽实测	建完表后用 INSERT 填一行真实长度的数据，测 pg_column_size() 确认是否真能落地
 
 选方案 2（EUC-JP）是正确的方向，之前我跑偏到 UTF-8 方向去了。
+
+
+
+900 列的情况，TOAST 确实帮不上忙。原因比你想象的要底层。
+为什么 TOAST 也没用
+TOAST 只对 单列数据超过约 2KB 才触发，把那个列的内容移出去换成 18 字节的指针。但 900 多列的问题出在列元数据本身：
+每行 tuple 的固定开销：
+  │  HeapTupleHeader (23 字节)
+  │  Null bitmap  (900 列 ≈ 113 字节)
+  │  变长列偏移数组 (每列 4 字节，如果全是 VARCHAR 那就是 3600 字节)
+  │  固定长度列的实际数据（INT / TIMESTAMP / CHAR 等，不能 TOAST）
+  │  ...
+  ├── 即使每列只占几字节，还没算数据，上半部分已经把 8KB 撑满了
+关键点：PostgreSQL tuple 内每列（哪怕值是 NULL）都要在元数据层占位。列数到了 900，即使大多数列都不填数据，Null bitmap + 偏移表 + header 就已经吃掉大量空间，剩下的放不下任何有意义的数据。
+可选的解决路径
+1. 垂直分表 — 最推荐的做法
+这是 PostgreSQL 应对宽表的标准答案。按业务逻辑把列分成几个 100~200 列的组，1:1 关联：
+CREATE TABLE t_core (
+    id          BIGSERIAL PRIMARY KEY,
+    col_001     TEXT,
+    col_002     INTEGER,
+    ...
+    col_200     TIMESTAMP
+);
+
+CREATE TABLE t_extended_1 (
+    id          BIGINT PRIMARY KEY REFERENCES t_core(id),
+    col_201     TEXT,
+    col_202     NUMERIC,
+    ...
+    col_400     VARCHAR(100)
+);
+
+CREATE TABLE t_extended_2 (
+    id          BIGINT PRIMARY KEY REFERENCES t_core(id),
+    col_401     TEXT,
+    ...
+    col_900     TEXT
+);
+还原完整视图（只读）：
+CREATE VIEW v_full_table AS
+SELECT c.*, e1.*, e2.*
+FROM t_core c
+LEFT JOIN t_extended_1 e1 USING (id)
+LEFT JOIN t_extended_2 e2 USING (id);
+好处：
+每张表都在千列以下，PostgreSQL 的 tuple layout 完全能应付
+对应用透明（改视图即可）
+后续可以只 JOIN 需要的分表，减少行幅，I/O 也少
+代价：
+写入需要事务包裹，确保各分表一致
+必须通过 JOIN 查询，写操作要在应用层或触发器里做多表 INSERT
+2. 把弱关联列合并成 JSONB
+如果这 900 列里有大量低频访问或结构相似的列（比如自定义属性、扩展字段），直接合并成一两个 JSONB 列：
+CREATE TABLE wide_table (
+    id         BIGSERIAL PRIMARY KEY,
+    col_001    TEXT,
+    col_002    INTEGER,
+    ...        -- 核心高频列放出来
+    col_100    TIMESTAMP,
+    extra      JSONB   -- 剩下的 800 列全塞这里
+);
+导入时：
+INSERT INTO wide_table (id, col_001, ..., col_100, extra)
+SELECT
+    id, col_001, ..., col_100,
+    jsonb_build_object(
+        'col_101', col_101,
+        'col_102', col_102,
+        ...
+    ) AS extra
+FROM oracle_source;
+访问时：
+-- 如果是普通查询不要大量解 JSONB，不需要拆
+SELECT * FROM wide_table WHERE extra->>'col_500' = 'foo';
+JSONB 自身是 TEXT 走 TOAST，单列数据大小不受 8KB 约束。
+适合的场景： 列名是 ATTR_001…ATTR_800 这类无明显业务语义、也很少单独建索引的字段。
+3. 增大 page size — 最后的物理手段
+如果无论如何都不改表结构（比如 Oracle 来的历史系统，应用层 SQL 是 SELECT * + 列序号引用的代码），那就只能：
+# 重新编译 PostgreSQL
+./configure --with-blocksize=32   # 页面 32KB，单行上限 ~32736 字节
+
+# 然后全库 dump / initdb / reload
+与垂直分表的对比：
+方案	最大行宽	需改应用	运维代价
+垂直分表	不受限（多个 JOIN）	需改写入路径，查询靠视图	低
+JSONB 合并	单个 JSONB 不受限	需要改查询语法	低
+32KB page	~32736 字节	无需改	极高（全库重建+reload）
+
+16KB 页面下最大行约 16352 字节。32KB 下约 32736 字节。
+但 900 列不够——算个账：
+即使 32KB page，假设每列平均只占 8 字节（很多类型不止）：
+900 列 × 8 字节 = 7200 字节数据
+加上 Null bitmap（~113 字节）+ 偏移表 + header = 轻松破万
+更别说还有 VARCHAR 长度占位
+32KB 放 900 列物理上可能勉强够，但非常不优雅，完全不适合长期维护。
+建议路线
+1. 先梳理 900 列的业务归属
+   │
+   ├─ 高频查询涉及 < 200 列 → 垂直分表，视图还原
+   │
+   ├─ 大量列是"自定义属性/扩展字段" → JSONB 收掉大部分
+   │
+   └─ "谁都不敢动表结构，也改不了代码"
+       └─ 先检查实际单行最大宽度
+           SELECT sum(pg_column_size(column_name)) FROM table;
+           如果实在超不出几十KB → 32KB page size 硬吃
+           如果还是超 → 必须分表，这是物理规律
+900 列的表在 Oracle 里尚可工作，但 PostgreSQL 的 storage engine 决定了它不擅长这样宽的表。这不是 bug，是设计取舍——PostgreSQL tuple 的 MVCC 机制依赖行内可见性信息，架构上就无法做得像 Oracle 那样容忍超宽行。
+如果你能贴出表的列构成（哪些类型、大概长度分布），我可以帮你规划一个最省事的分表方案。
