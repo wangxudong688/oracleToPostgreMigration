@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<transformation>
+  <info>
+    <name>ora2mysql_create_tables</name>
+    <description>读取 Oracle 表结构，在 MySQL 中创建对应表</description>
+    <trans_version>1.0</trans_version>
+  </info>
+  <order>
+    <hop>
+      <from>获取 Oracle 表名</from>
+      <to>生成 CREATE TABLE SQL</to>
+      <enabled>Y</enabled>
+    </hop>
+    <hop>
+      <from>生成 CREATE TABLE SQL</from>
+      <to>SQL 脚本执行</to>
+      <enabled>Y</enabled>
+    </hop>
+  </order>
+  <step>
+    <name>获取 Oracle 表名</name>
+    <type>TableInput</type>
+    <description>获取需要迁移的表清单</description>
+    <distribute>Y</distribute>
+    <copies>1</copies>
+    <GUI>
+      <xLoc>80</xLoc>
+      <yLoc>128</yLoc>
+    </GUI>
+    <file><type>Fixed</type></file>
+    <connection>ORACLE</connection>
+    <sql>
+SELECT table_name FROM all_tables
+ WHERE owner = UPPER('${ORACLE_SCHEMA}')
+   AND table_name NOT LIKE 'BIN$%'
+ ORDER BY table_name
+    </sql>
+    <limit>0</limit>
+    <lookup>N</lookup>
+    <execute_each_row>N</execute_each_row>
+    <variables_active>Y</variables_active>
+    <lazy_conversion_active>Y</lazy_conversion_active>
+  </step>
+  <step>
+    <name>生成 CREATE TABLE SQL</name>
+    <type>ExecuteSQLScript</type>
+    <description>生成 MySQL CREATE TABLE DDL</description>
+    <distribute>Y</distribute>
+    <copies>1</copies>
+    <GUI>
+      <xLoc>288</xLoc>
+      <yLoc>128</yLoc>
+    </GUI>
+    <connection>ORACLE</connection>
+    <SQL>
+SELECT
+  CONCAT(
+    'CREATE TABLE IF NOT EXISTS `', t.table_name, '` (',
+    GROUP_CONCAT(
+      CONCAT(
+        '`', c.column_name, '` ',
+        CASE
+          WHEN c.data_type IN ('VARCHAR2','NVARCHAR2','CHAR','NCHAR')
+            THEN CASE WHEN c.data_type = 'VARCHAR2' THEN 'VARCHAR' WHEN c.data_type = 'NVARCHAR2' THEN 'VARCHAR' WHEN c.data_type = 'NCHAR' THEN 'CHAR' WHEN c.data_type = 'CHAR' THEN 'CHAR' END
+            || '(' || c.char_length || ')'
+          WHEN c.data_type = 'NUMBER' AND c.data_precision IS NOT NULL AND c.data_scale IS NOT NULL AND c.data_scale > 0
+            THEN CONCAT('DECIMAL(', c.data_precision, ',', c.data_scale, ')')
+          WHEN c.data_type = 'NUMBER' AND c.data_precision IS NOT NULL AND c.data_scale = 0
+            THEN CONCAT('BIGINT')
+          WHEN c.data_type = 'NUMBER' AND c.data_precision IS NULL
+            THEN 'DECIMAL(38,0)'
+          WHEN c.data_type = 'DATE'
+            THEN 'DATETIME'
+          WHEN c.data_type IN ('TIMESTAMP','TIMESTAMP(6)')
+            THEN 'DATETIME(6)'
+          WHEN c.data_type IN ('CLOB','NCLOB')
+            THEN 'LONGTEXT'
+          WHEN c.data_type IN ('BLOB','RAW','LONG RAW')
+            THEN 'LONGBLOB'
+          WHEN c.data_type = 'FLOAT'
+            THEN 'DOUBLE'
+          WHEN c.data_type = 'INTEGER'
+            THEN 'INT'
+          WHEN c.data_type = 'BINARY_FLOAT'
+            THEN 'FLOAT'
+          WHEN c.data_type = 'BINARY_DOUBLE'
+            THEN 'DOUBLE'
+          ELSE c.data_type
+        END,
+        CASE WHEN c.nullable = 'N' THEN ' NOT NULL' ELSE '' END,
+        CASE WHEN c.data_default IS NOT NULL AND c.data_default != 'NULL' THEN CONCAT(' DEFAULT ', c.data_default) ELSE '' END,
+        CASE WHEN c.column_id = 1 THEN ' PRIMARY KEY' ELSE '' END
+      )
+      ORDER BY c.column_id
+      SEPARATOR ', '
+    ),
+    ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;'
+  ) AS ddl_sql
+FROM all_tab_columns c
+JOIN all_tables t ON c.owner = t.owner AND c.table_name = t.table_name
+WHERE t.owner = UPPER('${ORACLE_SCHEMA}')
+  AND t.table_name = ?
+GROUP BY t.table_name
+    </SQL>
+    <single_statement>N</single_statement>
+    <execute_each_row>N</execute_each_row>
+    <send_single_row>Y</send_single_row>
+    <replace_variables>Y</replace_variables>
+    <quoteString>Y</quoteString>
+  </step>
+  <step>
+    <name>SQL 脚本执行</name>
+    <type>ExecSQL</type>
+    <description>在 MySQL 上执行建表 SQL</description>
+    <distribute>Y</distribute>
+    <copies>1</copies>
+    <GUI>
+      <xLoc>496</xLoc>
+      <yLoc>128</yLoc>
+    </GUI>
+    <connection>MYSQL</connection>
+    <sql>?</sql>
+    <execute_each_row>Y</execute_each_row>
+    <single_statement>Y</single_statement>
+    <replace_variables>N</replace_variables>
+    <quoteString>Y</quoteString>
+  </step>
+  <step_error_handling>
+  </step_error_handling>
+  <slave-step-copy-distribution>
+  </slave-step-copy-distribution>
+  <connection>
+    <name>ORACLE</name>
+    <server>${ORACLE_HOST}</server>
+    <type>Oracle</type>
+    <access>Native</access>
+    <database>${ORACLE_DATABASE}</database>
+    <port>${ORACLE_PORT}</port>
+    <username>${ORACLE_USER}</username>
+    <password>${ORACLE_PASS}</password>
+    <read_only>Y</read_only>
+    <attributes>
+      <attribute><code>STREAM_RESULTS</code><attribute>Y</attribute></attribute>
+    </attributes>
+  </connection>
+  <connection>
+    <name>MYSQL</name>
+    <server>${MYSQL_HOST}</server>
+    <type>MySQL</type>
+    <access>Native</access>
+    <database>${MYSQL_DATABASE}</database>
+    <port>${MYSQL_PORT}</port>
+    <username>${MYSQL_USER}</username>
+    <password>${MYSQL_PASS}</password>
+    <attributes>
+      <attribute><code>STREAM_RESULTS</code><attribute>Y</attribute></attribute>
+    </attributes>
+  </connection>
+</transformation>

@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job>
+  <name>ora2mysql_master</name>
+  <description>Oracle 到 MySQL 全量迁移作业 - 主控</description>
+  <extended_description>
+    使用方式：
+    1. 编辑 config.properties 填入数据库连接信息
+    2. 生成表列表的 .kjb 副本：kitchen.sh /file:ora2mysql_master.kjb /param:"TABLES=EMP,DEPT" /level:Basic
+    3. 或在 PDI 的 Spoon GUI 中打开，在作业参数中设置 TABLES
+  </extended_description>
+  <parameters>
+    <parameter>
+      <name>TABLES</name>
+      <default_value>${TABLE_LIST}</default_value>
+      <description>要迁移的表名，逗号分隔，例如 EMP,DEPT,SALARY</description>
+    </parameter>
+    <parameter>
+      <name>ORACLE_HOST</name>
+      <default_value>${ORACLE_HOST}</default_value>
+      <description>Oracle 主机</description>
+    </parameter>
+    <parameter>
+      <name>ORACLE_PORT</name>
+      <default_value>${ORACLE_PORT}</default_value>
+      <description>Oracle 端口</description>
+    </parameter>
+    <parameter>
+      <name>ORACLE_DATABASE</name>
+      <default_value>${ORACLE_DATABASE}</default_value>
+      <description>Oracle 数据库 SID/服务名</description>
+    </parameter>
+    <parameter>
+      <name>ORACLE_USER</name>
+      <default_value>${ORACLE_USER}</default_value>
+      <description>Oracle 用户名</description>
+    </parameter>
+    <parameter>
+      <name>ORACLE_PASS</name>
+      <default_value>${ORACLE_PASS}</default_value>
+      <description>Oracle 密码</description>
+    </parameter>
+    <parameter>
+      <name>MYSQL_HOST</name>
+      <default_value>${MYSQL_HOST}</default_value>
+      <description>MySQL 主机</description>
+    </parameter>
+    <parameter>
+      <name>MYSQL_PORT</name>
+      <default_value>${MYSQL_PORT}</default_value>
+      <description>MySQL 端口</description>
+    </parameter>
+    <parameter>
+      <name>MYSQL_DATABASE</name>
+      <default_value>${MYSQL_DATABASE}</default_value>
+      <description>MySQL 数据库名</description>
+    </parameter>
+    <parameter>
+      <name>MYSQL_USER</name>
+      <default_value>${MYSQL_USER}</default_value>
+      <description>MySQL 用户名</description>
+    </parameter>
+    <parameter>
+      <name>MYSQL_PASS</name>
+      <default_value>${MYSQL_PASS}</default_value>
+      <description>MySQL 密码</description>
+    </parameter>
+    <parameter>
+      <name>COMMIT_SIZE</name>
+      <default_value>1000</default_value>
+      <description>提交行数</description>
+    </parameter>
+  </parameters>
+  <slaveservers>
+  </slaveservers>
+  <job-log-table>
+    <connection/>
+    <schema/>
+    <table/>
+    <use-batch>N</use-batch>
+    <table_size_limit/>
+    <field_schema_id/>
+    <field_entry_id/>
+    <field_channel_id/>
+    <field_transname/>
+    <field_status/>
+    <field_errors/>
+    <field_startdate/>
+    <field_enddate/>
+    <field_logdate/>
+    <field_depdate/>
+    <field_replaydate/>
+    <field_logfield/>
+  </job-log-table>
+  <pass_batchid>Y</pass_batchid>
+  <entries>
+    <entry>
+      <name>开始</name>
+      <description>迁移起始</description>
+      <type>SPECIAL</type>
+      <start>Y</start>
+      <dummy>N</dummy>
+      <repeat>N</repeat>
+      <slaveref/>
+      <parallel>N</parallel>
+      <draw>Y</draw>
+      <nr>0</nr>
+      <xLoc>32</xLoc>
+      <yLoc>96</yLoc>
+      <attributes/>
+    </entry>
+    <entry>
+      <name>校验数据库连接</name>
+      <description>测试 Oracle 和 MySQL 连通性</description>
+      <type>SIMPLE_EVAL</type>
+      <start>N</start>
+      <dummy>N</dummy>
+      <repeat>N</repeat>
+      <slaveref/>
+      <parallel>N</parallel>
+      <draw>Y</draw>
+      <nr>0</nr>
+      <xLoc>208</xLoc>
+      <yLoc>96</yLoc>
+      <script>
+        var oracleOK = (parent_job.getVariable("ORACLE_HOST").length() > 0);
+        var mysqlOK = (parent_job.getVariable("MYSQL_HOST").length() > 0);
+        if (!oracleOK) { job.setResult(false); job.setErrors(1); }
+        if (!mysqlOK) { job.setResult(false); job.setErrors(1); }
+      </script>
+    </entry>
+    <entry>
+      <name>DDL - 创建 MySQL 目标表</name>
+      <description>根据 Oracle 表结构在 MySQL 中建表</description>
+      <type>TRANS</type>
+      <start>N</start>
+      <dummy>N</dummy>
+      <repeat>N</repeat>
+      <slaveref/>
+      <parallel>N</parallel>
+      <draw>Y</draw>
+      <nr>0</nr>
+      <xLoc>416</xLoc>
+      <yLoc>96</yLoc>
+      <specification_method>filename</specification_method>
+      <filename>${Internal.Entry.Current.Directory}/ora2mysql_create_tables.ktr</filename>
+      <trans_object_id/>
+      <arg_from_previous>N</arg_from_previous>
+      <params_from_previous>Y</params_from_previous>
+      <exec_per_row>Y</exec_per_row>
+      <clear_rows>Y</clear_rows>
+      <set_logfile>N</set_logfile>
+      <logfile/>
+      <logext/>
+      <add_date>N</add_date>
+      <add_time>N</add_time>
+      <loglevel>Basic</loglevel>
+      <set_append_logfile>N</set_append_logfile>
+      <wait_for_completion>Y</wait_for_completion>
+      <follow_abort_remote>N</follow_abort_remote>
+      <create_parent_folder>N</create_parent_folder>
+      <parallel>N</parallel>
+      <attributes/>
+      <pass_all_parameters>Y</pass_all_parameters>
+    </entry>
+    <entry>
+      <name>DATA - 迁移表数据</name>
+      <description>调用单表迁移转换，逐表拷贝数据</description>
+      <type>TRANS</type>
+      <start>N</start>
+      <dummy>N</dummy>
+      <repeat>N</repeat>
+      <slaveref/>
+      <parallel>N</parallel>
+      <draw>Y</draw>
+      <nr>0</nr>
+      <xLoc>608</xLoc>
+      <yLoc>96</yLoc>
+      <specification_method>filename</specification_method>
+      <filename>${Internal.Entry.Current.Directory}/ora2mysql_copy.ktr</filename>
+      <trans_object_id/>
+      <arg_from_previous>N</arg_from_previous>
+      <params_from_previous>Y</params_from_previous>
+      <exec_per_row>Y</exec_per_row>
+      <clear_rows>Y</clear_rows>
+      <set_logfile>N</set_logfile>
+      <logfile/>
+      <logext/>
+      <add_date>N</add_date>
+      <add_time>N</add_time>
+      <loglevel>Basic</loglevel>
+      <set_append_logfile>N</set_append_logfile>
+      <wait_for_completion>Y</wait_for_completion>
+      <follow_abort_remote>N</follow_abort_remote>
+      <create_parent_folder>N</create_parent_folder>
+      <parallel>N</parallel>
+      <attributes/>
+      <pass_all_parameters>Y</pass_all_parameters>
+    </entry>
+    <entry>
+      <name>完成</name>
+      <description>迁移完成</description>
+      <type>SUCCESS</type>
+      <start>N</start>
+      <dummy>N</dummy>
+      <repeat>N</repeat>
+      <slaveref/>
+      <parallel>N</parallel>
+      <draw>Y</draw>
+      <nr>0</nr>
+      <xLoc>784</xLoc>
+      <yLoc>96</yLoc>
+    </entry>
+  </entries>
+  <hops>
+    <hop>
+      <from>开始</from>
+      <to>校验数据库连接</to>
+      <enabled>Y</enabled>
+      <evaluation>Y</evaluation>
+      <unconditional>Y</unconditional>
+    </hop>
+    <hop>
+      <from>校验数据库连接</from>
+      <to>DDL - 创建 MySQL 目标表</to>
+      <enabled>Y</enabled>
+      <evaluation>Y</evaluation>
+      <unconditional>N</unconditional>
+    </hop>
+    <hop>
+      <from>DDL - 创建 MySQL 目标表</from>
+      <to>DATA - 迁移表数据</to>
+      <enabled>Y</enabled>
+      <evaluation>Y</evaluation>
+      <unconditional>Y</unconditional>
+    </hop>
+    <hop>
+      <from>DATA - 迁移表数据</from>
+      <to>完成</to>
+      <enabled>Y</enabled>
+      <evaluation>Y</evaluation>
+      <unconditional>N</unconditional>
+    </hop>
+  </hops>
+  <notepads>
+  </notepads>
+  <attributes/>
+</job>
